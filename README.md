@@ -2,7 +2,7 @@
 
 Awakmu ngerti artine "Dataiki"? Bener banget, tegese "Data iki" alias "This Data" nang basa bule ne. Pas banget karo fungsine, aplikasi iki digawe khusus nggo mbantu kowe ngolah *data iki*, *data iku*, lan kabeh data-datamu sing pating semrawut ben dadi luwih rapi lan siap didadekne *Machine Learning*. 
 
-Dataiki iki ibarat asisten pribadimu. Kowe ra usah mumet nulis kode *boilerplate* sing bola-bali padha. Seka narik data mentah, reresik data, nglatih model, sampe *deploy* dadi API—kabeh kari *drag-and-drop* nang kanvas sing penak banget didelok! 
+Kowe ra usah mumet nulis kode *boilerplate* sing bola-bali padha. Seka narik data mentah, reresik data, nglatih model, sampe *deploy* dadi API—kabeh kari *drag-and-drop* nang kanvas sing penak banget didelok! 
 
 ---
 
@@ -69,4 +69,4 @@ npm run dev
 
 - Publish: Pindah nang mode Production Gateway lan pamerne modelmu dadi API utawa Scheduler.
 
-Sugeng bereksperimen karo datamu! Nek seneng karo Dataiki, ojo lali wenehi ⭐ nang repo iki ya lur!
+Sugeng bereksperimen karo datamu.
