@@ -1,0 +1,6 @@
+# Dataiki Standalone Production Bundle Dependencies
+# Strict pinned runtime environment (Zero Vendor Lock-in)
+{% for package, version in dependencies.items() %}
+{{ package }}=={{ version }}
+{% endfor %}
+

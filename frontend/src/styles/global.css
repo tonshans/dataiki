@@ -1,0 +1,198 @@
+@import './themes.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =====================================================================
+   Base
+   ===================================================================== */
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-ui);
+    background-color: var(--bg-canvas);
+    color: var(--text-main);
+  }
+
+  code,
+  pre,
+  kbd,
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+
+  ::selection {
+    background-color: var(--accent-primary);
+    color: var(--bg-card);
+  }
+}
+
+/* =====================================================================
+   Scrollbar
+   ===================================================================== */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-color) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--border-color);
+  border: 2px solid var(--bg-canvas);
+  border-radius: var(--border-radius);
+}
+
+/* =====================================================================
+   Utilities — recipe diff flash & hazard stripe frames
+   ===================================================================== */
+
+@keyframes flash-modified-cell {
+  0% {
+    background-color: var(--accent-secondary);
+    color: var(--bg-card);
+  }
+  100% {
+    background-color: transparent;
+    color: inherit;
+  }
+}
+
+.flash-modified-cell {
+  animation: flash-modified-cell 1s ease-out;
+}
+
+.hazard-stripes {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--accent-warning) 0px,
+    var(--accent-warning) 10px,
+    var(--text-main) 10px,
+    var(--text-main) 20px
+  );
+  border: var(--border-width) solid var(--border-color);
+}
+
+.hazard-stripes-danger {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--accent-danger) 0px,
+    var(--accent-danger) 10px,
+    var(--text-main) 10px,
+    var(--text-main) 20px
+  );
+  border: var(--border-width) solid var(--border-color);
+}
+
+/* =====================================================================
+   React Flow overrides
+   ===================================================================== */
+
+.react-flow {
+  background-color: var(--bg-canvas);
+  font-family: var(--font-ui);
+  color: var(--text-main);
+}
+
+.react-flow__node {
+  font-family: var(--font-ui);
+  color: var(--text-main);
+}
+
+.react-flow__node-custom {
+  border: var(--border-width) solid var(--border-color);
+  border-radius: var(--border-radius);
+  background-color: var(--bg-card);
+  box-shadow: var(--shadow-card);
+}
+
+.react-flow__node.selected {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.react-flow__edge-path {
+  stroke: var(--border-color);
+  stroke-width: 2;
+}
+
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--accent-primary);
+}
+
+.react-flow__connection-path {
+  stroke: var(--accent-primary);
+  stroke-width: 2;
+}
+
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  background-color: var(--bg-card);
+  border: 2px solid var(--border-color);
+  border-radius: 50%;
+}
+
+.react-flow__handle:hover,
+.react-flow__handle.connectingfrom,
+.react-flow__handle.connectingto {
+  background-color: var(--accent-primary);
+}
+
+.react-flow__controls {
+  border: var(--border-width) solid var(--border-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background-color: var(--bg-card);
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-main);
+  fill: var(--text-main);
+}
+
+.react-flow__controls-button:hover {
+  background-color: var(--bg-hover);
+}
+
+.react-flow__attribution {
+  background-color: transparent;
+  color: var(--text-muted);
+}
+
+.react-flow__attribution a {
+  color: var(--text-muted);
+}
+
+@keyframes node-pulse {
+  0%,
+  100% {
+    box-shadow: var(--shadow-card);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--accent-warning);
+  }
+}
+
+.react-flow__node.node-loading {
+  animation: node-pulse 1.2s ease-in-out infinite;
+}
