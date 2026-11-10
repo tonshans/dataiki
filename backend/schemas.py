@@ -145,6 +145,10 @@ class ColumnAnalysisResponse(BaseModel):
     null_count: int
     zero_ratio_pct: float
     negative_count: int
+    unique_count: int = 0
+    zero_count: int = 0
+    skewness: Optional[float] = None
+    kurtosis: Optional[float] = None
     central_tendency: Dict[str, Optional[Union[float, str]]]  # {mean, median, mode}
     dispersion: Dict[str, Optional[float]]                    # {std, variance, min, max, iqr, q25, q50, q75}
     outliers: Dict[str, Union[float, int]]                    # {iqr_count, iqr_pct, zscore_count, zscore_pct}

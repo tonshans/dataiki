@@ -443,7 +443,7 @@ function adaptColumnAnalysis(raw: any, targetColumn?: string | null): ColumnDeep
     fill_rate_pct: Number(raw?.fill_rate_pct ?? 0),
     null_count: nullCount,
     null_pct: totalRows > 0 ? round((nullCount / totalRows) * 100) : 0,
-    zero_count: Math.round((zeroRatio / 100) * totalRows),
+    zero_count: Number(raw?.zero_count ?? Math.round((zeroRatio / 100) * totalRows)),
     zero_ratio_pct: zeroRatio,
     negative_count: Number(raw?.negative_count ?? 0),
     mean: central.mean ?? null,
@@ -495,6 +495,14 @@ function taskTypeToPredictionType(taskType: string): PredictionType {
   return map[taskType] ?? 'binary_classification';
 }
 
+function normalizeConfusionMatrix(raw: any): number[][] | undefined {
+  if (Array.isArray(raw)) return raw as number[][];
+  if (raw && typeof raw === 'object' && Array.isArray(raw.matrix)) {
+    return raw.matrix as number[][];
+  }
+  return undefined;
+}
+
 function adaptMlSession(raw: any): MLSessionItem {
   return {
     session_id: String(raw?.session_id ?? ''),
@@ -518,7 +526,7 @@ function adaptMlSession(raw: any): MLSessionItem {
           fit_time_sec: Number(entry?.fit_time_sec ?? 0),
           latency_ms: Number(entry?.latency_ms ?? 0),
           metrics: entry?.metrics ?? {},
-          confusion_matrix: Array.isArray(entry?.confusion_matrix) ? entry.confusion_matrix : undefined,
+          confusion_matrix: normalizeConfusionMatrix(entry?.confusion_matrix),
           feature_importance: entry?.feature_importance,
           artifact_path: String(entry?.artifact_path ?? ''),
         }))
@@ -623,9 +631,8 @@ function jobToBackend(job: ProductionJobItem) {
     sinkConfig.url = sink.api_url ?? '';
   } else {
     const format = sink.file_format ?? 'parquet';
-    const dir = (sink.output_dir ?? 'storage/exports').replace(/\/+$/, '');
     sinkConfig.format = format;
-    sinkConfig.dest_path = `${dir}/dataiki_batch.${format}`;
+    sinkConfig.output_dir = sink.output_dir ?? 'storage/exports';
   }
   // shortcut: SMTP alert rides inside sink_config because backend ScheduleConfig drops extra keys.
   if (job.schedule_config.smtp_alert) sinkConfig.smtp_alert = job.schedule_config.smtp_alert;
@@ -668,7 +675,9 @@ function jobFromBackend(raw: any): ProductionJobItem {
       table_name: sink.table_name,
       write_mode: sink.mode,
       file_format: sink.format,
-      output_dir: sink.dest_path ? String(sink.dest_path).replace(/\/[^/]+$/, '') : undefined,
+      output_dir:
+        sink.output_dir ??
+        (sink.dest_path ? String(sink.dest_path).replace(/\/[^/]+$/, '') : undefined),
       api_url: sink.url,
     },
     schedule_config: scheduleFromBackend({ ...(raw?.schedule_config ?? {}), smtp_alert: sink.smtp_alert }),
@@ -1180,16 +1189,15 @@ export async function fetchProductionJob(jobId: string): Promise<ProductionJobIt
 }
 
 /**
- * Backend only supports creating jobs and updating their schedule.
- * For an existing job this updates the persisted schedule; the rest of the
- * definition stays in the Zustand store (source of truth for the UI).
+ * Persist a batch job. New jobs are created with POST; existing jobs are
+ * updated in full (source, model, scripts, sink, schedule) via PUT.
  */
 export async function saveProductionJob(job: ProductionJobItem): Promise<ProductionJobItem> {
   const payload = jobToBackend(job);
   if (job.job_script_id) {
-    await apiRequest<any>(`/production/jobs/${segment(job.job_script_id)}/schedule`, {
+    await apiRequest<any>(`/production/jobs/${segment(job.job_script_id)}`, {
       method: 'PUT',
-      body: jsonBody(payload.schedule_config),
+      body: jsonBody(payload),
     });
     return {
       ...job,

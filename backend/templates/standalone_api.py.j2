@@ -16,6 +16,8 @@ import polars as pl
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
+from dataiki_recipe import RecipeValidationError, replay_frozen_lineage
+
 # Load immutable bundle
 BUNDLE_PATH = Path(__file__).parent / "bundle.joblib"
 if not BUNDLE_PATH.exists():
@@ -62,6 +64,25 @@ def _prepare_features(data: Union[Dict[str, Any], List[Dict[str, Any]]]) -> np.n
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unsupported input data format: {type(data).__name__}",
+        )
+
+    try:
+        df = replay_frozen_lineage(df, frozen_lineage, fail_fast_mode=True)
+    except RecipeValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Frozen pipeline replay failed: {exc}",
+        ) from exc
+
+    if df.height == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="All input records were rejected by the frozen recipe.",
         )
 
     # Check required feature columns

@@ -15,6 +15,8 @@ import joblib
 import numpy as np
 import polars as pl
 
+from dataiki_recipe import replay_frozen_lineage
+
 BUNDLE_PATH = Path(__file__).parent / "bundle.joblib"
 if not BUNDLE_PATH.exists():
     raise FileNotFoundError(f"Missing bundle.joblib at {BUNDLE_PATH}")
@@ -25,10 +27,15 @@ transformer = bundle["transformer"]
 label_encoder = bundle.get("label_encoder")
 feature_columns: List[str] = bundle.get("feature_columns", [])
 target_column: str = bundle.get("target_column", "target")
+frozen_lineage: Dict[str, Any] = bundle.get("frozen_lineage", {})
 
 
 def predict_dataframe(df: pl.DataFrame) -> pl.DataFrame:
     """Take an input Polars DataFrame, compute predictions, and return enriched DataFrame."""
+    df = replay_frozen_lineage(df, frozen_lineage, fail_fast_mode=True)
+    if df.height == 0:
+        raise ValueError("All input records were rejected by the frozen recipe.")
+
     missing = [c for c in feature_columns if c not in df.columns]
     if missing:
         raise ValueError(f"Input DataFrame is missing required feature columns: {missing}")

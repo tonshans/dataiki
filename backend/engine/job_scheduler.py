@@ -226,7 +226,9 @@ def run_batch_job(batch_job_id: str) -> Dict[str, Any]:
 
         elif sink_type in ("file", "local_file"):
             fmt = sink_cfg.get("format", "parquet").lower()
-            dest_file = Path(sink_cfg.get("dest_path", f"storage/exports/batch_{batch_job_id}.{fmt}"))
+            explicit_dest = sink_cfg.get("dest_path")
+            output_dir = str(sink_cfg.get("output_dir") or "storage/exports").rstrip("/\\")
+            dest_file = Path(explicit_dest or f"{output_dir}/batch_{batch_job_id}.{fmt}")
             dest_file.parent.mkdir(parents=True, exist_ok=True)
             if fmt == "parquet":
                 final_df.write_parquet(dest_file)

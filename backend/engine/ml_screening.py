@@ -552,10 +552,16 @@ def run_screening_job(
         def get_score(entry: LeaderboardEntry) -> float:
             return entry.metrics.get(pm, entry.metrics.get(request.primary_metric, -1e9 if desc else 1e9))
 
-        leaderboard_entries.sort(key=get_score, reverse=desc)
+        successful = [e for e in leaderboard_entries if e.rank != 999]
+        failed = [e for e in leaderboard_entries if e.rank == 999]
 
-        for r_i, entry in enumerate(leaderboard_entries):
+        successful.sort(key=get_score, reverse=desc)
+        for r_i, entry in enumerate(successful):
             entry.rank = r_i + 1
+        for f_i, entry in enumerate(failed):
+            entry.rank = 1000 + f_i
+
+        leaderboard_entries = successful + failed
 
         # 9. Save Session to Trophy Cabinet (ml_sessions)
         session_id = f"sess_{uuid.uuid4().hex[:12]}"

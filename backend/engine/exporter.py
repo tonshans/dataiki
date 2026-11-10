@@ -136,6 +136,9 @@ API will be live at `http://localhost:8000/docs`.
 ```bash
 python standalone_batch.py --input test_data.csv --output scored_output.csv
 ```
+
+> Catatan: input harus memuat kolom mentah yang dibutuhkan recipe dan python
+> transform. Node ingestion/join tidak dijalankan ulang oleh package standalone.
 """
 
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -149,6 +152,10 @@ python standalone_batch.py --input test_data.csv --output scored_output.csv
         (temp_dir / "Dockerfile").write_text(rendered_docker, encoding="utf-8")
         (temp_dir / "standalone_api.py").write_text(rendered_api, encoding="utf-8")
         (temp_dir / "standalone_batch.py").write_text(rendered_batch, encoding="utf-8")
+        shutil.copy2(
+            BASE_DIR / "backend" / "engine" / "recipe_engine.py",
+            temp_dir / "dataiki_recipe.py",
+        )
         (temp_dir / "README.md").write_text(readme_content, encoding="utf-8")
 
         # Copy binary bundle.joblib

@@ -86,6 +86,8 @@ def promote_candidate_model(payload: PromoteModelRequest) -> Dict[str, Any]:
         )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
@@ -212,8 +214,23 @@ def create_custom_endpoint(payload: CustomEndpointCreate) -> Dict[str, Any]:
             ),
         )
 
+        row = conn.execute(
+            """
+            SELECT endpoint_id
+            FROM custom_endpoints
+            WHERE project_key = ? AND http_method = ? AND custom_path = ?
+            """,
+            (payload.project_key, method, norm_path),
+        ).fetchone()
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Endpoint upsert failed to return a persisted row.",
+            )
+        persisted_id = str(row["endpoint_id"])
+
     return {
-        "endpoint_id": endpoint_id,
+        "endpoint_id": persisted_id,
         "project_key": payload.project_key,
         "http_method": method,
         "custom_path": norm_path,
@@ -309,6 +326,49 @@ def create_batch_job(payload: BatchJobCreate) -> Dict[str, Any]:
         sync_apscheduler_jobs()
 
     return {"batch_job_id": jid, "job_name": payload.job_name, "status": "created"}
+
+
+@router.put("/jobs/{batch_job_id}")
+def update_batch_job(batch_job_id: str, payload: BatchJobCreate) -> Dict[str, Any]:
+    """Update the full definition of an existing batch job."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT project_key FROM batch_jobs WHERE batch_job_id = ?",
+            (batch_job_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Batch job '{batch_job_id}' not found.",
+            )
+        if payload.project_key != row["project_key"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="project_key cannot be changed for an existing batch job.",
+            )
+
+        conn.execute(
+            """
+            UPDATE batch_jobs
+            SET job_name = ?, model_version = ?, source_config_json = ?,
+                pre_mapper_script = ?, post_calc_script = ?,
+                sink_config_json = ?, schedule_config_json = ?
+            WHERE batch_job_id = ?
+            """,
+            (
+                payload.job_name,
+                payload.model_version,
+                json.dumps(payload.source_config),
+                payload.pre_mapper_script,
+                payload.post_calc_script,
+                json.dumps(payload.sink_config),
+                json.dumps(payload.schedule_config.model_dump()),
+                batch_job_id,
+            ),
+        )
+
+    sync_apscheduler_jobs()
+    return {"batch_job_id": batch_job_id, "job_name": payload.job_name, "status": "updated"}
 
 
 @router.get("/jobs/{project_key}")

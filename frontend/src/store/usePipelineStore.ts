@@ -305,6 +305,7 @@ function reconcileActiveBindings(
 
 interface PipelineState {
   projects: ProjectItem[];
+  knownRemoteProjectKeys: string[];
   activeProjectKey: string;
 
   nodes: Node<CanvasNodeData>[];
@@ -397,6 +398,7 @@ export const usePipelineStore = create<PipelineState>()(
   persist(
     (set, get) => ({
       projects: [],
+      knownRemoteProjectKeys: [],
       activeProjectKey: '',
       nodes: [],
       edges: [],
@@ -420,13 +422,19 @@ export const usePipelineStore = create<PipelineState>()(
         try {
           const remoteProjects = await api.fetchProjects();
           set((state) => {
-            const merged = new Map(remoteProjects.map((project) => [project.project_key, project]));
-            for (const localProject of state.projects) {
-              if (!merged.has(localProject.project_key)) {
-                merged.set(localProject.project_key, localProject);
-              }
-            }
-            return { projects: Array.from(merged.values()) };
+            const remoteKeys = new Set(remoteProjects.map((project) => project.project_key));
+            const previouslyKnown = new Set(state.knownRemoteProjectKeys);
+
+            const localOnly = state.projects.filter(
+              (project) =>
+                !remoteKeys.has(project.project_key) &&
+                !previouslyKnown.has(project.project_key),
+            );
+
+            return {
+              projects: [...remoteProjects, ...localOnly],
+              knownRemoteProjectKeys: [...remoteKeys],
+            };
           });
           return get().projects;
         } catch (error) {
@@ -925,6 +933,13 @@ export const usePipelineStore = create<PipelineState>()(
         const target = state.publishedModels.find((model) => model.model_id === modelId);
         if (!target) throw new Error(`Model '${modelId}' not found in the registry.`);
 
+        const parsed = api.parseModelId(modelId);
+        if (!parsed) return;
+
+        const previousModels = state.publishedModels;
+        const previousEndpoints = state.customEndpoints;
+        const previousJobs = state.productionJobs;
+
         const nextModels = state.publishedModels.map((model) => {
           if (model.model_id === modelId) return { ...model, status: 'active' as const };
           if (
@@ -945,13 +960,6 @@ export const usePipelineStore = create<PipelineState>()(
           ),
         }));
 
-        get().addProcessLog(
-          'INFO',
-          `Activated '${target.model_name}' v${target.version}; API and job bindings updated.`,
-        );
-
-        const parsed = api.parseModelId(modelId);
-        if (!parsed) return;
         try {
           await api.changeModelStatus(parsed.projectKey, parsed.version, 'activate');
         } catch (error) {
@@ -959,7 +967,18 @@ export const usePipelineStore = create<PipelineState>()(
             'ERROR',
             `Backend activation failed for '${target.model_name}' v${target.version}: ${errorMessage(error)}`,
           );
+          set({
+            publishedModels: previousModels,
+            ...reconcileActiveBindings(previousModels, previousEndpoints, previousJobs),
+          });
+          get().addProcessLog('WARN', 'Model activation rolled back; UI state restored.');
+          throw error;
         }
+
+        get().addProcessLog(
+          'INFO',
+          `Activated '${target.model_name}' v${target.version}; API and job bindings updated.`,
+        );
       },
 
       retrainModel: async (modelId) => {
@@ -1332,6 +1351,7 @@ export const usePipelineStore = create<PipelineState>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         projects: state.projects,
+        knownRemoteProjectKeys: state.knownRemoteProjectKeys,
         activeProjectKey: state.activeProjectKey,
         nodes: state.nodes,
         edges: state.edges,

@@ -122,7 +122,10 @@ def delete_project_by_key(project_key: str) -> Dict[str, str]:
 @router.post("/connections", status_code=status.HTTP_201_CREATED)
 def create_vault_connection(payload: ConnectionCreate) -> Dict[str, Any]:
     """Store external database or REST API connection credentials."""
-    return create_connection(payload)
+    try:
+        return create_connection(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.get("/connections")
@@ -147,6 +150,8 @@ def update_vault_connection(conn_id: str, payload: ConnectionCreate) -> Dict[str
         return update_connection(conn_id, payload)
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Connection '{conn_id}' not found.")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.delete("/connections/{conn_id}")
@@ -226,10 +231,21 @@ def list_uploads() -> List[Dict[str, Any]]:
 @router.post("/uploads", status_code=status.HTTP_201_CREATED)
 async def upload_local_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     """Handle multipart file upload into storage/uploads/ directory."""
-    if not file.filename:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file missing filename.")
+    raw_name = file.filename or ""
+    safe_name = Path(raw_name).name.strip()
+    if not safe_name or safe_name in {".", ".."}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file missing a valid filename.",
+        )
 
-    dest_path = UPLOADS_DIR / file.filename
+    uploads_root = UPLOADS_DIR.resolve()
+    dest_path = (uploads_root / safe_name).resolve()
+    if dest_path.parent != uploads_root:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid upload filename.",
+        )
     try:
         with dest_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)

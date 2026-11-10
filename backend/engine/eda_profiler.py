@@ -100,6 +100,10 @@ def analyze_column_deep(
     )
 
     # Zero ratio and negative count
+    unique_count = int(s.drop_nulls().n_unique())
+    zero_count = 0
+    skewness_val: Optional[float] = None
+    kurtosis_val: Optional[float] = None
     if is_numeric and valid_count > 0:
         zero_count = int((s == 0).sum())
         zero_ratio_pct = round((zero_count / total_rows) * 100.0, 2) if total_rows > 0 else 0.0
@@ -167,6 +171,20 @@ def analyze_column_deep(
         dispersion["q25"] = round(q25, 4) if q25 is not None else None
         dispersion["q50"] = round(q50, 4) if q50 is not None else None
         dispersion["q75"] = round(q75, 4) if q75 is not None else None
+
+        try:
+            cand = float(s_clean.skew())
+            if math.isfinite(cand):
+                skewness_val = round(cand, 4)
+        except Exception:
+            skewness_val = None
+
+        try:
+            cand = float(s_clean.kurtosis())
+            if math.isfinite(cand):
+                kurtosis_val = round(cand, 4)
+        except Exception:
+            kurtosis_val = None
 
         # Outlier Detection
         # 1. 1.5 * IQR method
@@ -243,6 +261,10 @@ def analyze_column_deep(
         null_count=null_count,
         zero_ratio_pct=zero_ratio_pct,
         negative_count=negative_count,
+        unique_count=unique_count,
+        zero_count=zero_count,
+        skewness=skewness_val,
+        kurtosis=kurtosis_val,
         central_tendency=central_tendency,
         dispersion=dispersion,
         outliers=outliers,

@@ -24,6 +24,11 @@ function downloadBlob(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  return copy as ArrayBuffer;
+}
+
 /* =====================================================================
    CSV
    ===================================================================== */
@@ -238,6 +243,6 @@ function buildXlsx(previewData: TabularPreviewData): Uint8Array {
 }
 
 export function exportPreviewToExcel(previewData: TabularPreviewData, filename: string): void {
-  const blob = new Blob([buildXlsx(previewData)], { type: XLSX_MIME });
+  const blob = new Blob([toArrayBuffer(buildXlsx(previewData))], { type: XLSX_MIME });
   downloadBlob(blob, withExtension(filename, '.xlsx'));
 }

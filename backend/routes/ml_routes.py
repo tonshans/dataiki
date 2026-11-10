@@ -122,11 +122,9 @@ def resolve_cardinality(
         fail_job(job_id, "Screening aborted by user.")
         return {"job_id": job_id, "status": "stopped", "message": "Screening stopped."}
 
-    # Resume job
-    resume_job(job_id, act)
-
-    # Reconstruct original ScreeningRequest
-    ctx = job_info.get("pause_context", {})
+    # Reconstruct and validate the original ScreeningRequest before mutating job state,
+    # so a missing/invalid pause context cannot leave the job stuck in 'running'.
+    ctx = job_info.get("pause_context", {}) or {}
     req_data = ctx.get("request_data")
     if not req_data:
         raise HTTPException(
@@ -134,8 +132,11 @@ def resolve_cardinality(
             detail="Original screening request configuration missing in pause context.",
         )
 
+    req_data = dict(req_data)
     req_data["high_cardinality_action"] = act
     req = ScreeningRequest.model_validate(req_data)
+
+    resume_job(job_id, act)
 
     background_tasks.add_task(run_screening_job, req, job_id)
 

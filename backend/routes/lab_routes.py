@@ -65,15 +65,22 @@ def save_dag(project_key: str, dag: PipelineDAG) -> Dict[str, str]:
     dag_json = dag.model_dump_json()
 
     with get_db() as conn:
+        row = conn.execute(
+            "SELECT name, description FROM projects WHERE project_key = ?",
+            (project_key,),
+        ).fetchone()
+        name = row["name"] if row else project_key
+        description = row["description"] if row else ""
+
         conn.execute(
             """
             INSERT INTO projects (project_key, name, description, dag_json, updated_at)
-            VALUES (?, ?, '', ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(project_key) DO UPDATE SET
                 dag_json = excluded.dag_json,
                 updated_at = excluded.updated_at
             """,
-            (project_key, project_key, dag_json, now_str),
+            (project_key, name, description, dag_json, now_str),
         )
 
     return {"status": "saved", "project_key": project_key}

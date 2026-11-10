@@ -1,15 +1,28 @@
 """Connection Vault and SQL Snippets management engine."""
 
 import json
+import logging
+import os
+import sqlite3
 import uuid
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
 import polars as pl
 
-## butuh oracle client versi >= 19.1 untuk enable thick client 
-import oracledb
-oracledb.init_oracle_client()
+logger = logging.getLogger(__name__)
+
+try:
+    import oracledb
+except ImportError:  # oracle driver optional
+    oracledb = None  # type: ignore[assignment]
+
+# Thick mode hanya jika diminta eksplisit; default thin mode (tanpa Instant Client).
+if oracledb is not None and os.getenv("DATAIKI_ORACLE_THICK", "0") == "1":
+    try:
+        oracledb.init_oracle_client()
+    except Exception as exc:
+        logger.warning("Oracle thick client init failed, fallback to thin mode: %s", exc)
 
 from sqlalchemy import create_engine, text
 
@@ -87,13 +100,16 @@ def create_connection(conn_data: Union[ConnectionCreate, Dict[str, Any]]) -> Dic
     headers_json = json.dumps(headers) if isinstance(headers, dict) else str(headers)
 
     with get_db() as db:
-        db.execute(
-            """
-            INSERT INTO connections (conn_id, name, conn_type, connection_uri, headers_json)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (conn_id, name, conn_type, connection_uri, headers_json),
-        )
+        try:
+            db.execute(
+                """
+                INSERT INTO connections (conn_id, name, conn_type, connection_uri, headers_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (conn_id, name, conn_type, connection_uri, headers_json),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"Connection name '{name}' already exists.") from exc
 
     saved = get_connection(conn_id)
     if not saved:
@@ -146,14 +162,17 @@ def update_connection(conn_id: str, conn_data: Union[ConnectionCreate, Dict[str,
     headers_json = json.dumps(headers) if isinstance(headers, dict) else str(headers)
 
     with get_db() as db:
-        db.execute(
-            """
-            UPDATE connections
-            SET name = ?, conn_type = ?, connection_uri = ?, headers_json = ?
-            WHERE conn_id = ?
-            """,
-            (name, conn_type, connection_uri, headers_json, conn_id),
-        )
+        try:
+            db.execute(
+                """
+                UPDATE connections
+                SET name = ?, conn_type = ?, connection_uri = ?, headers_json = ?
+                WHERE conn_id = ?
+                """,
+                (name, conn_type, connection_uri, headers_json, conn_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"Connection name '{name}' already exists.") from exc
 
     updated = get_connection(conn_id)
     if not updated:

@@ -577,6 +577,13 @@ def promote_to_production(
     if not res:
         raise ValueError(f"Tuning job '{tuning_job_id}' has no completed results.")
 
+    best_trial = int(res.get("best_trial_number", 0))
+    if int(trial_number) != best_trial:
+        raise ValueError(
+            f"Trial #{trial_number} cannot be promoted directly; "
+            f"only the best trial (#{best_trial}) has a frozen candidate bundle."
+        )
+
     # Load candidate bundle
     candidate_path = res.get("candidate_bundle_path")
     if not candidate_path or not Path(candidate_path).exists():
@@ -615,6 +622,7 @@ def promote_to_production(
     frozen_lineage = bundle_data.get("frozen_lineage", {})
     frozen_lineage["preprocessing"] = bundle_data.get("preprocessing", {})
     frozen_lineage["target_node_id"] = input_node_id
+    frozen_lineage["promoted_trial_number"] = best_trial
 
     # Package production bundle
     prod_bundle = {
@@ -623,6 +631,7 @@ def promote_to_production(
         "label_encoder": bundle_data.get("label_encoder"),
         "project_key": project_key,
         "version": next_ver,
+        "trial_number": best_trial,
         "task_type": bundle_data["task_type"],
         "algorithm": bundle_data["algorithm"],
         "target_column": bundle_data["target_column"],

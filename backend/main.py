@@ -5,6 +5,7 @@ Self-Hosted Lightweight Visual Data Science, AutoML & MLOps Studio.
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Dict
 
@@ -43,10 +44,22 @@ app = FastAPI(
 )
 
 # CORS Configuration
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "DATAIKI_CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+allow_credentials = os.getenv("DATAIKI_CORS_ALLOW_CREDENTIALS", "false").lower() == "true"
+if allow_credentials and "*" in cors_origins:
+    raise RuntimeError("DATAIKI_CORS_ALLOW_CREDENTIALS=true requires explicit origins, not '*'.")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

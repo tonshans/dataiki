@@ -11,6 +11,7 @@ Executes visual DAG pipelines with support for:
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -88,6 +89,14 @@ def topological_sort(dag: PipelineDAG) -> List[NodeConfig]:
     return ordered_nodes
 
 
+def _quote_ident(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _sql_str(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def _execute_join_node(
     project_key: str,
     node: NodeConfig,
@@ -149,20 +158,51 @@ def _execute_join_node(
     if len(left_on_list) != len(right_on_list):
         raise ValueError("Join keys length mismatch between left_on and right_on.")
 
-    on_clauses = [f'L."{l_k}" = R."{r_k}"' for l_k, r_k in zip(left_on_list, right_on_list)]
+    on_clauses = [
+        f"L.{_quote_ident(l_k)} = R.{_quote_ident(r_k)}"
+        for l_k, r_k in zip(left_on_list, right_on_list)
+    ]
     on_expr = " AND ".join(on_clauses)
-
-    query = f"""
-    SELECT L.*, R.* 
-    FROM read_parquet('{left_path.as_posix()}') AS L
-    {sql_join} read_parquet('{right_path.as_posix()}') AS R
-    ON {on_expr}
-    """
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect()
     try:
-        con.execute(f"COPY ({query}) TO '{dest_path.as_posix()}' (FORMAT PARQUET)")
+        left_sql = _sql_str(left_path.as_posix())
+        right_sql = _sql_str(right_path.as_posix())
+
+        left_cols = [
+            d[0]
+            for d in con.execute(
+                f"DESCRIBE SELECT * FROM read_parquet({left_sql})"
+            ).fetchall()
+        ]
+        right_cols = [
+            d[0]
+            for d in con.execute(
+                f"DESCRIBE SELECT * FROM read_parquet({right_sql})"
+            ).fetchall()
+        ]
+
+        left_set = set(left_cols)
+        used_aliases = set(left_cols)
+        select_parts = [f"L.{_quote_ident(c)}" for c in left_cols]
+        for c in right_cols:
+            if c in right_on_list and c in left_set:
+                continue  # jangan duplikasi join key yang sama nama
+            alias = c
+            while alias in used_aliases:
+                alias = f"{alias}_right"
+            used_aliases.add(alias)
+            select_parts.append(f"R.{_quote_ident(c)} AS {_quote_ident(alias)}")
+        select_sql = ", ".join(select_parts)
+
+        query = f"""
+        SELECT {select_sql}
+        FROM read_parquet({left_sql}) AS L
+        {sql_join} read_parquet({right_sql}) AS R
+        ON {on_expr}
+        """
+        con.execute(f"COPY ({query}) TO {_sql_str(dest_path.as_posix())} (FORMAT PARQUET)")
     finally:
         con.close()
 
@@ -289,14 +329,15 @@ def execute_node(
         return _execute_py_transform_node(project_key, node, dag, dest_path)
 
     elif node.node_type == "ml_studio":
-        # Terminal node: ensures incoming upstream parquet exists
         incoming = [e for e in dag.edges if e.target == node.node_id]
-        if incoming:
-            parent_id = incoming[0].source
-            parent_parquet = CACHE_DIR / project_key / f"{parent_id}.parquet"
-            if not parent_parquet.exists():
-                raise FileNotFoundError(f"ML Studio input Parquet missing: {parent_parquet}")
-            return parent_parquet.as_posix()
+        if not incoming:
+            raise ValueError(f"ML Studio node '{node.node_id}' has no incoming edge.")
+        parent_id = incoming[0].source
+        parent_parquet = CACHE_DIR / project_key / f"{parent_id}.parquet"
+        if not parent_parquet.exists():
+            raise FileNotFoundError(f"ML Studio input Parquet missing: {parent_parquet}")
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(parent_parquet, dest_path)
         return dest_path.as_posix()
 
     else:

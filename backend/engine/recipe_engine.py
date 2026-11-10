@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import tempfile
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import duckdb
 import numpy as np
 import polars as pl
 
-from backend.schemas import RecipeStep
+if TYPE_CHECKING:
+    from backend.schemas import RecipeStep
 
 
 class RecipeValidationError(Exception):
@@ -37,6 +39,13 @@ class RecipeValidationError(Exception):
             detail += f" (record index: {record_index})"
         self.message = detail
         super().__init__(self.message)
+
+
+def _step_get(step: Any, key: str, default: Any = None) -> Any:
+    """Read a recipe step field from a RecipeStep object or a plain dict."""
+    if isinstance(step, dict):
+        return step.get(key, default)
+    return getattr(step, key, default)
 
 
 def _resolve_polars_dtype(dtype_name: str) -> pl.DataType:
@@ -208,11 +217,12 @@ def apply_recipe_steps(
 
     for step in steps:
         # Train-only isolation check
-        if step.is_train_only and not include_train_only:
+        is_train_only = bool(_step_get(step, "is_train_only", False))
+        if is_train_only and not include_train_only:
             continue
 
-        op = step.op_type
-        params = step.params or {}
+        op = _step_get(step, "op_type")
+        params = _step_get(step, "params", {}) or {}
 
         # 1. drop_column
         if op == "drop_column":
@@ -238,14 +248,14 @@ def apply_recipe_steps(
         elif op == "cast_dtype":
             col = params.get("column")
             target_dtype_str = params.get("target_dtype")
-            mapping = params.get("mapping", {})
+            mapping = dict(params.get("mapping", {}))
             if col and target_dtype_str:
                 mapping[col] = target_dtype_str
 
             for c_name, d_str in mapping.items():
                 if c_name not in current_df.columns:
                     if fail_fast_mode:
-                        raise RecipeValidationError(step.label, message=f"Column '{c_name}' not found for casting")
+                        raise RecipeValidationError(_step_get(step, "label", ""), message=f"Column '{c_name}' not found for casting")
                     continue
 
                 target_pl_dtype = _resolve_polars_dtype(d_str)
@@ -256,7 +266,7 @@ def apply_recipe_steps(
                         casted_s = orig_s.cast(target_pl_dtype, strict=False)
                     except Exception as exc:
                         raise RecipeValidationError(
-                            step.label,
+                            _step_get(step, "label", ""),
                             record_index=0,
                             message=f"Failed to cast '{c_name}' to '{d_str}': {exc}",
                         ) from exc
@@ -270,7 +280,7 @@ def apply_recipe_steps(
                         )
                         bad_val = orig_s[first_bad_idx]
                         raise RecipeValidationError(
-                            step.label,
+                            _step_get(step, "label", ""),
                             record_index=first_bad_idx,
                             message=f"Invalid value '{bad_val}' in column '{c_name}' cannot be cast to '{d_str}'",
                         )
@@ -292,6 +302,13 @@ def apply_recipe_steps(
                 if c_name not in current_df.columns:
                     continue
                 s = current_df[c_name]
+                if strategy in {"mean", "median"} and not s.dtype.is_numeric():
+                    if fail_fast_mode:
+                        raise RecipeValidationError(
+                            _step_get(step, "label", ""),
+                            message=f"Strategy '{strategy}' requires numeric column '{c_name}'",
+                        )
+                    continue
                 if strategy == "constant":
                     current_df = current_df.with_columns(pl.col(c_name).fill_null(fill_val))
                 elif strategy == "mean":
@@ -318,7 +335,7 @@ def apply_recipe_steps(
 
             if col not in current_df.columns:
                 if fail_fast_mode:
-                    raise RecipeValidationError(step.label, message=f"Column '{col}' not found for filter")
+                    raise RecipeValidationError(_step_get(step, "label", ""), message=f"Column '{col}' not found for filter")
                 continue
 
             # Construct filter condition
@@ -361,7 +378,7 @@ def apply_recipe_steps(
                         .filter(fail_mask)["__row_idx"][0]
                     )
                     raise RecipeValidationError(
-                        step.label,
+                        _step_get(step, "label", ""),
                         record_index=first_bad_idx,
                         message=f"Row {first_bad_idx} rejected by filter condition: {col} {operator} {val}",
                     )
@@ -374,14 +391,36 @@ def apply_recipe_steps(
             if not new_col or not formula:
                 continue
 
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(new_col)):
+                msg = f"Invalid new column name '{new_col}'."
+                if fail_fast_mode:
+                    raise RecipeValidationError(_step_get(step, "label", ""), message=msg)
+                raise ValueError(msg)
+
+            overwrite = bool(params.get("overwrite", False))
+            if new_col in current_df.columns and not overwrite:
+                msg = (
+                    f"Column '{new_col}' already exists; set params.overwrite=true to replace it."
+                )
+                if fail_fast_mode:
+                    raise RecipeValidationError(_step_get(step, "label", ""), message=msg)
+                raise ValueError(msg)
+
             # Execute SQL formula expression via DuckDB + temp Parquet
             # (avoids pyarrow dependency; con.close() guaranteed by try/finally)
-            tmp_path = tempfile.mktemp(suffix=".parquet")
+            fd, tmp_name = tempfile.mkstemp(suffix=".parquet")
+            os.close(fd)
+            tmp_path = tmp_name
             con = duckdb.connect()
             try:
                 current_df.write_parquet(tmp_path)
+                if overwrite:
+                    select_expr = f'* REPLACE (({formula}) AS "{new_col}")'
+                else:
+                    select_expr = f'*, ({formula}) AS "{new_col}"'
+                safe_tmp = tmp_path.replace("'", "''")
                 rel = con.execute(
-                    f'SELECT *, ({formula}) AS "{new_col}" FROM read_parquet("{tmp_path}")'
+                    f"SELECT {select_expr} FROM read_parquet('{safe_tmp}')"
                 )
                 col_names = [d[0] for d in rel.description]
                 rows = rel.fetchall()
@@ -389,7 +428,7 @@ def apply_recipe_steps(
                 modified_columns.append(new_col)
             except Exception as exc:
                 if fail_fast_mode:
-                    raise RecipeValidationError(step.label, message=f"Formula error in '{formula}': {exc}") from exc
+                    raise RecipeValidationError(_step_get(step, "label", ""), message=f"Formula error in '{formula}': {exc}") from exc
                 raise ValueError(f"Failed to evaluate formula '{formula}': {exc}") from exc
             finally:
                 con.close()
@@ -677,4 +716,43 @@ def apply_recipe_steps(
     # Deduplicate modified columns preserving order
     deduped_modified = list(dict.fromkeys(modified_columns))
     return current_df, deduped_modified
+
+
+def replay_frozen_lineage(
+    df: pl.DataFrame,
+    lineage: Dict[str, Any],
+    fail_fast_mode: bool = True,
+) -> pl.DataFrame:
+    """Replay frozen DAG recipe + python-transform nodes on incoming raw records."""
+    current = df
+    for node in lineage.get("lineage_nodes") or []:
+        node_type = node.get("node_type")
+        params = node.get("params") or {}
+
+        if node_type == "data_recipe":
+            steps = params.get("recipe_steps") or []
+            if steps:
+                current, _ = apply_recipe_steps(
+                    df=current,
+                    steps=steps,
+                    include_train_only=False,
+                    fail_fast_mode=fail_fast_mode,
+                )
+
+        elif node_type == "py_transform":
+            code_text = str(params.get("code") or "")
+            if not code_text.strip():
+                continue
+            sandbox: Dict[str, Any] = {
+                "pl": pl,
+                "np": np,
+                "duckdb": duckdb,
+                "__builtins__": __builtins__,
+            }
+            exec(code_text, sandbox, sandbox)
+            transform_fn = sandbox.get("transform")
+            if callable(transform_fn):
+                current = transform_fn(current)
+
+    return current
 
