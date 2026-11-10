@@ -22,6 +22,7 @@ import {
   Save,
   Server,
   Terminal,
+  Trash2,
   Upload,
   X,
   Zap,
@@ -69,6 +70,8 @@ const SECONDARY_BUTTON =
   'flex items-center justify-center gap-1.5 border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-bold text-[var(--text-main)] rounded-[var(--border-radius)] transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-not-allowed disabled:opacity-50';
 const PRIMARY_BUTTON =
   'flex items-center justify-center gap-1.5 bg-[var(--accent-primary)] px-3 py-1.5 text-xs font-bold text-[var(--bg-card)] shadow-[var(--shadow-card)] rounded-[var(--border-radius)] transition-opacity disabled:cursor-not-allowed disabled:opacity-50';
+const DANGER_BUTTON =
+  'flex items-center justify-center gap-1.5 border-[length:var(--border-width)] border-[var(--accent-danger)] bg-transparent px-3 py-1.5 text-xs font-bold text-[var(--accent-danger)] rounded-[var(--border-radius)] transition-colors hover:bg-[var(--accent-danger)] hover:text-[var(--bg-card)] disabled:cursor-not-allowed disabled:opacity-50';
 const HINT_CLASS = 'text-[11px] text-[var(--text-muted)]';
 
 const SOURCE_MODES = [
@@ -285,6 +288,7 @@ function DataSourceConfig({ node }: ConfigProps) {
   const params = node.data.params ?? {};
   const addToast = useUIStore((state) => state.addToast);
   const close = useUIStore((state) => state.setActiveConfigNodeId);
+  const deleteNode = usePipelineStore((state) => state.deleteNode);
 
   const initialMode = modeFromParams(params);
   const [mode, setMode] = useState<SourceMode>(initialMode);
@@ -492,6 +496,16 @@ function DataSourceConfig({ node }: ConfigProps) {
     }
   };
 
+  const handleDelete = async () => {
+    try {
+      await deleteNode(node.id);
+      addToast('info', `${node.data.label} deleted.`);
+      close(null);
+    } catch (error) {
+      addToast('error', `Failed to delete node: ${messageOf(error)}`);
+    }
+  };
+
   const handleSave = async () => {
     try {
       const nextParams = buildParams();
@@ -540,6 +554,10 @@ function DataSourceConfig({ node }: ConfigProps) {
           <button type="button" onClick={() => close(null)} disabled={busy} className={SECONDARY_BUTTON}>
             Cancel
           </button>
+          <button type="button" onClick={() => void handleDelete()} disabled={busy} className={DANGER_BUTTON}>
+            <Trash2 size={13} />
+            Delete Node
+          </button>
           <button type="button" onClick={() => void handleSave()} disabled={busy} className={PRIMARY_BUTTON}>
             <Save size={13} />
             Save Node
@@ -556,11 +574,10 @@ function DataSourceConfig({ node }: ConfigProps) {
               type="button"
               onClick={() => changeMode(source.value)}
               aria-pressed={mode === source.value}
-              className={`flex items-center gap-2 border-[length:var(--border-width)] p-2.5 text-left text-xs font-bold rounded-[var(--border-radius)] ${
-                mode === source.value
+              className={`flex items-center gap-2 border-[length:var(--border-width)] p-2.5 text-left text-xs font-bold rounded-[var(--border-radius)] ${mode === source.value
                   ? 'border-[var(--accent-primary)] bg-[var(--bg-hover)] text-[var(--text-main)]'
                   : 'border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
-              }`}
+                }`}
             >
               <Icon size={16} className="shrink-0 text-[var(--accent-primary)]" />
               {source.label}
@@ -699,11 +716,10 @@ function DataSourceConfig({ node }: ConfigProps) {
                     key={file.file_path}
                     type="button"
                     onClick={() => setFilePath(file.file_path)}
-                    className={`flex w-full items-center justify-between gap-3 border-b-[length:var(--border-width)] border-[var(--border-color)] px-3 py-2 text-left last:border-b-0 ${
-                      filePath === file.file_path
+                    className={`flex w-full items-center justify-between gap-3 border-b-[length:var(--border-width)] border-[var(--border-color)] px-3 py-2 text-left last:border-b-0 ${filePath === file.file_path
                         ? 'bg-[var(--bg-hover)]'
                         : 'bg-[var(--bg-card)] hover:bg-[var(--bg-hover)]'
-                    }`}
+                      }`}
                   >
                     <span className="flex min-w-0 items-center gap-2">
                       <FileText size={13} className="shrink-0 text-[var(--accent-primary)]" />
@@ -764,11 +780,10 @@ function DataSourceConfig({ node }: ConfigProps) {
 
         {testOutcome && (
           <div
-            className={`flex items-start gap-2 border-[length:var(--border-width)] border-[var(--border-color)] p-2.5 text-xs rounded-[var(--border-radius)] ${
-              testOutcome.success
+            className={`flex items-start gap-2 border-[length:var(--border-width)] border-[var(--border-color)] p-2.5 text-xs rounded-[var(--border-radius)] ${testOutcome.success
                 ? 'text-[var(--accent-secondary)]'
                 : 'text-[var(--accent-danger)]'
-            }`}
+              }`}
           >
             {testOutcome.success ? <Check size={14} className="mt-0.5 shrink-0" /> : <AlertTriangle size={14} className="mt-0.5 shrink-0" />}
             <span className="break-words">{testOutcome.message}</span>
@@ -1067,6 +1082,7 @@ function validateRecipeSteps(steps: RecipeFormStep[]): string | null {
 function RecipeConfig({ node }: ConfigProps) {
   const addToast = useUIStore((state) => state.addToast);
   const close = useUIStore((state) => state.setActiveConfigNodeId);
+  const deleteNode = usePipelineStore((state) => state.deleteNode);
   const [steps, setSteps] = useState<RecipeFormStep[]>(() =>
     (node.data.recipe_steps ?? []).map(recipeStepToForm),
   );
@@ -1134,6 +1150,16 @@ function RecipeConfig({ node }: ConfigProps) {
     }
   };
 
+  const handleDelete = async () => {
+    try {
+      await deleteNode(node.id);
+      addToast('info', `${node.data.label} deleted.`);
+      close(null);
+    } catch (error) {
+      addToast('error', `Failed to delete node: ${messageOf(error)}`);
+    }
+  };
+
   const handleSave = async () => {
     const validation = validateRecipeSteps(steps);
     if (validation) {
@@ -1168,6 +1194,10 @@ function RecipeConfig({ node }: ConfigProps) {
           <button type="button" onClick={() => close(null)} disabled={isPreviewing} className={SECONDARY_BUTTON}>
             Cancel
           </button>
+          <button type="button" onClick={() => void handleDelete()} disabled={isPreviewing} className={DANGER_BUTTON}>
+            <Trash2 size={13} />
+            Delete Node
+          </button>
           <button type="button" onClick={() => void handleSave()} disabled={isPreviewing} className={PRIMARY_BUTTON}>
             <Save size={13} />
             Save Node
@@ -1184,22 +1214,20 @@ function RecipeConfig({ node }: ConfigProps) {
           <button
             type="button"
             onClick={() => setViewRaw(true)}
-            className={`px-2.5 py-1 text-[11px] font-bold rounded-[var(--border-radius)] ${
-              viewRaw
+            className={`px-2.5 py-1 text-[11px] font-bold rounded-[var(--border-radius)] ${viewRaw
                 ? 'bg-[var(--accent-primary)] text-[var(--bg-card)]'
                 : 'border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-muted)]'
-            }`}
+              }`}
           >
             View Raw
           </button>
           <button
             type="button"
             onClick={() => setViewRaw(false)}
-            className={`px-2.5 py-1 text-[11px] font-bold rounded-[var(--border-radius)] ${
-              !viewRaw
+            className={`px-2.5 py-1 text-[11px] font-bold rounded-[var(--border-radius)] ${!viewRaw
                 ? 'bg-[var(--accent-primary)] text-[var(--bg-card)]'
                 : 'border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-muted)]'
-            }`}
+              }`}
           >
             View Processed
           </button>
@@ -1376,6 +1404,7 @@ function SplitDataConfig({ node }: ConfigProps) {
   const params = node.data.params ?? {};
   const addToast = useUIStore((state) => state.addToast);
   const close = useUIStore((state) => state.setActiveConfigNodeId);
+  const deleteNode = usePipelineStore((state) => state.deleteNode);
   const projectKey = usePipelineStore((state) => state.activeProjectKey);
   const tabularPreview = usePipelineStore((state) => state.tabularPreview);
 
@@ -1449,6 +1478,16 @@ function SplitDataConfig({ node }: ConfigProps) {
     path_b_columns: pathB,
   });
 
+  const handleDelete = async () => {
+    try {
+      await deleteNode(node.id);
+      addToast('info', `${node.data.label} deleted.`);
+      close(null);
+    } catch (error) {
+      addToast('error', `Failed to delete node: ${messageOf(error)}`);
+    }
+  };
+
   const handleSave = async () => {
     try {
       persistNode(node.id, { params: { ...params, ...buildParams() } });
@@ -1491,6 +1530,10 @@ function SplitDataConfig({ node }: ConfigProps) {
           <button type="button" onClick={() => close(null)} disabled={isPreviewing} className={SECONDARY_BUTTON}>
             Cancel
           </button>
+          <button type="button" onClick={() => void handleDelete()} disabled={isPreviewing} className={DANGER_BUTTON}>
+            <Trash2 size={13} />
+            Delete Node
+          </button>
           <button type="button" onClick={() => void handleSave()} disabled={isPreviewing} className={PRIMARY_BUTTON}>
             <Save size={13} />
             Save Node
@@ -1506,11 +1549,10 @@ function SplitDataConfig({ node }: ConfigProps) {
               key={branch}
               type="button"
               onClick={() => setPreviewBranch(branch)}
-              className={`px-2.5 py-1 text-[11px] font-bold rounded-[var(--border-radius)] ${
-                previewBranch === branch
+              className={`px-2.5 py-1 text-[11px] font-bold rounded-[var(--border-radius)] ${previewBranch === branch
                   ? 'bg-[var(--accent-primary)] text-[var(--bg-card)]'
                   : 'border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-muted)]'
-              }`}
+                }`}
             >
               Path {branch.toUpperCase()}
             </button>
@@ -1609,14 +1651,12 @@ function JoinVenn({ type }: { type: string }) {
   return (
     <span className="relative block h-7 w-12 shrink-0">
       <span
-        className={`absolute left-0 top-0 h-7 w-7 rounded-full border-[length:var(--border-width)] border-[var(--border-color)] ${
-          leftActive ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-card)]'
-        }`}
+        className={`absolute left-0 top-0 h-7 w-7 rounded-full border-[length:var(--border-width)] border-[var(--border-color)] ${leftActive ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-card)]'
+          }`}
       />
       <span
-        className={`absolute right-0 top-0 h-7 w-7 rounded-full border-[length:var(--border-width)] border-[var(--border-color)] ${
-          rightActive ? 'bg-[var(--accent-secondary)]' : 'bg-[var(--bg-card)]'
-        }`}
+        className={`absolute right-0 top-0 h-7 w-7 rounded-full border-[length:var(--border-width)] border-[var(--border-color)] ${rightActive ? 'bg-[var(--accent-secondary)]' : 'bg-[var(--bg-card)]'
+          }`}
       />
     </span>
   );
@@ -1626,6 +1666,7 @@ function JoinerConfig({ node }: ConfigProps) {
   const params = node.data.params ?? {};
   const addToast = useUIStore((state) => state.addToast);
   const close = useUIStore((state) => state.setActiveConfigNodeId);
+  const deleteNode = usePipelineStore((state) => state.deleteNode);
   const projectKey = usePipelineStore((state) => state.activeProjectKey);
   const nodes = usePipelineStore((state) => state.nodes);
   const edges = usePipelineStore((state) => state.edges);
@@ -1678,6 +1719,16 @@ function JoinerConfig({ node }: ConfigProps) {
     left_node_id: leftEdge?.source ?? '',
     right_node_id: rightEdge?.source ?? '',
   });
+
+  const handleDelete = async () => {
+    try {
+      await deleteNode(node.id);
+      addToast('info', `${node.data.label} deleted.`);
+      close(null);
+    } catch (error) {
+      addToast('error', `Failed to delete node: ${messageOf(error)}`);
+    }
+  };
 
   const handleSave = async () => {
     if (!leftOn.trim() || !rightOn.trim()) {
@@ -1756,6 +1807,10 @@ function JoinerConfig({ node }: ConfigProps) {
           <button type="button" onClick={() => close(null)} disabled={isPreviewing} className={SECONDARY_BUTTON}>
             Cancel
           </button>
+          <button type="button" onClick={() => void handleDelete()} disabled={isPreviewing} className={DANGER_BUTTON}>
+            <Trash2 size={13} />
+            Delete Node
+          </button>
           <button type="button" onClick={() => void handleSave()} disabled={isPreviewing} className={PRIMARY_BUTTON}>
             <Save size={13} />
             Save Node
@@ -1803,11 +1858,10 @@ function JoinerConfig({ node }: ConfigProps) {
             type="button"
             onClick={() => setJoinType(type.value)}
             aria-pressed={joinType === type.value}
-            className={`flex items-center gap-2 border-[length:var(--border-width)] p-2 text-left text-[11px] font-bold rounded-[var(--border-radius)] ${
-              joinType === type.value
+            className={`flex items-center gap-2 border-[length:var(--border-width)] p-2 text-left text-[11px] font-bold rounded-[var(--border-radius)] ${joinType === type.value
                 ? 'border-[var(--accent-primary)] bg-[var(--bg-hover)] text-[var(--text-main)]'
                 : 'border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
-            }`}
+              }`}
           >
             <JoinVenn type={type.value} />
             {type.label}
@@ -1835,6 +1889,7 @@ function PythonScriptConfig({ node }: ConfigProps) {
   const params = node.data.params ?? {};
   const addToast = useUIStore((state) => state.addToast);
   const close = useUIStore((state) => state.setActiveConfigNodeId);
+  const deleteNode = usePipelineStore((state) => state.deleteNode);
   const activeTheme = useUIStore((state) => state.activeTheme);
   const [code, setCode] = useState(() => asText(params.code) || PYTHON_TEMPLATE);
   const [isRunning, setIsRunning] = useState(false);
@@ -1848,6 +1903,16 @@ function PythonScriptConfig({ node }: ConfigProps) {
       return false;
     }
     return true;
+  };
+
+  const handleDelete = async () => {
+    try {
+      await deleteNode(node.id);
+      addToast('info', `${node.data.label} deleted.`);
+      close(null);
+    } catch (error) {
+      addToast('error', `Failed to delete node: ${messageOf(error)}`);
+    }
   };
 
   const handleSave = async () => {
@@ -1889,6 +1954,10 @@ function PythonScriptConfig({ node }: ConfigProps) {
           </button>
           <button type="button" onClick={() => close(null)} disabled={isRunning} className={SECONDARY_BUTTON}>
             Cancel
+          </button>
+          <button type="button" onClick={() => void handleDelete()} disabled={isRunning} className={DANGER_BUTTON}>
+            <Trash2 size={13} />
+            Delete Node
           </button>
           <button type="button" onClick={() => void handleSave()} disabled={isRunning} className={PRIMARY_BUTTON}>
             <Save size={13} />

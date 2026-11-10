@@ -24,6 +24,7 @@ import {
   Sparkles,
   Target,
   Timer,
+  Trash2,
   Trophy,
   X,
   Zap,
@@ -198,6 +199,8 @@ const SECONDARY_BUTTON =
   'flex items-center justify-center gap-1.5 border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-bold text-[var(--text-main)] rounded-[var(--border-radius)] transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-not-allowed disabled:opacity-50';
 const PRIMARY_BUTTON =
   'flex items-center justify-center gap-1.5 bg-[var(--accent-primary)] px-3 py-1.5 text-xs font-bold text-[var(--bg-card)] shadow-[var(--shadow-card)] rounded-[var(--border-radius)] transition-opacity disabled:cursor-not-allowed disabled:opacity-50';
+const DANGER_BUTTON =
+  'flex items-center justify-center gap-1.5 border-[length:var(--border-width)] border-[var(--accent-danger)] bg-transparent px-3 py-1.5 text-xs font-bold text-[var(--accent-danger)] rounded-[var(--border-radius)] transition-colors hover:bg-[var(--accent-danger)] hover:text-[var(--bg-card)] disabled:cursor-not-allowed disabled:opacity-50';
 const HINT_CLASS = 'text-[11px] text-[var(--text-muted)]';
 const CARD_CLASS =
   'border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] rounded-[var(--border-radius)]';
@@ -335,8 +338,8 @@ function normalizeLeaderboard(raw: unknown): LeaderboardEntry[] {
     metrics:
       entry?.metrics && typeof entry.metrics === 'object'
         ? Object.fromEntries(
-            Object.entries(entry.metrics).map(([key, value]) => [key, Number(value)]),
-          )
+          Object.entries(entry.metrics).map(([key, value]) => [key, Number(value)]),
+        )
         : {},
     confusion_matrix: normalizeConfusionMatrix(entry?.confusion_matrix),
     feature_importance:
@@ -353,8 +356,8 @@ function normalizeTrials(raw: unknown): TrialRow[] {
     const metrics =
       trial?.metrics && typeof trial.metrics === 'object'
         ? Object.fromEntries(
-            Object.entries(trial.metrics).map(([key, value]) => [key, Number(value)]),
-          )
+          Object.entries(trial.metrics).map(([key, value]) => [key, Number(value)]),
+        )
         : {};
     const score = Number(trial?.score ?? trial?.value ?? 0);
     return {
@@ -668,9 +671,8 @@ function Toggle({
       </span>
       <span
         aria-hidden="true"
-        className={`relative h-5 w-9 shrink-0 border-[length:var(--border-width)] border-[var(--border-color)] rounded-[var(--border-radius)] ${
-          checked ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-canvas)]'
-        }`}
+        className={`relative h-5 w-9 shrink-0 border-[length:var(--border-width)] border-[var(--border-color)] rounded-[var(--border-radius)] ${checked ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-canvas)]'
+          }`}
       >
         <span
           className="absolute top-0 h-full w-1/2 border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] transition-all"
@@ -847,15 +849,14 @@ function ComparisonBars({ rows }: { rows: ComparisonRow[] }) {
               {metricLabel(row.metric)}
             </span>
             <span
-              className={`font-mono text-[10px] font-bold ${
-                metricIsHigherBetter(row.metric)
+              className={`font-mono text-[10px] font-bold ${metricIsHigherBetter(row.metric)
                   ? row.diff >= 0
                     ? 'text-[var(--accent-secondary)]'
                     : 'text-[var(--accent-danger)]'
                   : row.diff <= 0
                     ? 'text-[var(--accent-secondary)]'
                     : 'text-[var(--accent-danger)]'
-              }`}
+                }`}
             >
               {row.diff >= 0 ? '+' : ''}
               {formatMetricValue(row.metric, row.diff)}
@@ -903,6 +904,7 @@ export function MLStudioModal() {
   const node = usePipelineStore((state) =>
     state.nodes.find((item) => item.id === activeNodeId),
   );
+  const deleteNode = usePipelineStore((state) => state.deleteNode);
   const projectKey = usePipelineStore((state) => state.activeProjectKey);
   const upstreamId = usePipelineStore((state) => {
     const edge = state.edges.find((item) => item.target === activeNodeId);
@@ -1303,8 +1305,8 @@ export function MLStudioModal() {
       targetColumn: value,
       featureColumns: value
         ? columns
-            .filter((column) => column.column_name !== value)
-            .map((column) => column.column_name)
+          .filter((column) => column.column_name !== value)
+          .map((column) => column.column_name)
         : [],
       timeColumn: current.timeColumn === value ? '' : current.timeColumn,
     }));
@@ -1518,9 +1520,8 @@ export function MLStudioModal() {
 
   const openEntryImportance = (entry: LeaderboardEntry) => {
     setFeatureImportanceTarget({
-      title: `${entry.algorithm} · ${
-        selectedSession?.session_name ?? (liveLeaderboard.length > 0 ? 'Latest screening' : 'Screening')
-      }`,
+      title: `${entry.algorithm} · ${selectedSession?.session_name ?? (liveLeaderboard.length > 0 ? 'Latest screening' : 'Screening')
+        }`,
       importance: entry.feature_importance ?? {},
       metrics: entry.metrics,
       confusionMatrix: entry.confusion_matrix,
@@ -1687,18 +1688,16 @@ export function MLStudioModal() {
                   key={tab.id}
                   type="button"
                   onClick={() => setActiveTab(tab.id)}
-                  className={`flex min-w-0 flex-1 items-center justify-center gap-2 border-r-[length:var(--border-width)] border-[var(--border-color)] px-3 py-2 text-xs font-bold transition-colors ${
-                    active
+                  className={`flex min-w-0 flex-1 items-center justify-center gap-2 border-r-[length:var(--border-width)] border-[var(--border-color)] px-3 py-2 text-xs font-bold transition-colors ${active
                       ? 'bg-[var(--bg-card)] text-[var(--accent-primary)]'
                       : 'bg-[var(--bg-canvas)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
-                  }`}
+                    }`}
                 >
                   <span
-                    className={`flex h-5 w-5 shrink-0 items-center justify-center border-[length:var(--border-width)] border-[var(--border-color)] font-mono text-[10px] rounded-[var(--border-radius)] ${
-                      active
+                    className={`flex h-5 w-5 shrink-0 items-center justify-center border-[length:var(--border-width)] border-[var(--border-color)] font-mono text-[10px] rounded-[var(--border-radius)] ${active
                         ? 'bg-[var(--accent-primary)] text-[var(--bg-card)]'
                         : 'bg-[var(--bg-card)] text-[var(--text-muted)]'
-                    }`}
+                      }`}
                   >
                     {tab.id}
                   </span>
@@ -2113,11 +2112,10 @@ export function MLStudioModal() {
                           return (
                             <label
                               key={algorithm}
-                              className={`flex cursor-pointer items-center gap-2 border-[length:var(--border-width)] px-2 py-1.5 rounded-[var(--border-radius)] ${
-                                checked
+                              className={`flex cursor-pointer items-center gap-2 border-[length:var(--border-width)] px-2 py-1.5 rounded-[var(--border-radius)] ${checked
                                   ? 'border-[var(--accent-primary)] bg-[var(--bg-canvas)]'
                                   : 'border-[var(--border-color)] bg-[var(--bg-input)]'
-                              }`}
+                                }`}
                             >
                               <input
                                 type="checkbox"
@@ -2188,17 +2186,16 @@ export function MLStudioModal() {
                                 Minority
                               </p>
                               <p
-                                className={`mt-0.5 font-mono text-sm font-bold ${
-                                  minorityPercent !== null && minorityPercent < 10
+                                className={`mt-0.5 font-mono text-sm font-bold ${minorityPercent !== null && minorityPercent < 10
                                     ? 'text-[var(--accent-warning)]'
                                     : 'text-[var(--text-main)]'
-                                }`}
+                                  }`}
                               >
                                 {minorityPercent === null
                                   ? '—'
                                   : `${minorityPercent.toLocaleString(undefined, {
-                                      maximumFractionDigits: 1,
-                                    })}%`}
+                                    maximumFractionDigits: 1,
+                                  })}%`}
                               </p>
                             </div>
                           </div>
@@ -2464,11 +2461,10 @@ export function MLStudioModal() {
                               >
                                 <td className="px-2 py-1.5">
                                   <span
-                                    className={`inline-flex min-w-6 items-center justify-center border-[length:var(--border-width)] px-1 py-0.5 font-mono text-[10px] font-bold rounded-[var(--border-radius)] ${
-                                      entry.rank === 1
+                                    className={`inline-flex min-w-6 items-center justify-center border-[length:var(--border-width)] px-1 py-0.5 font-mono text-[10px] font-bold rounded-[var(--border-radius)] ${entry.rank === 1
                                         ? 'border-[var(--accent-warning)] bg-[var(--accent-warning)] text-[var(--bg-card)]'
                                         : 'border-[var(--border-color)] text-[var(--text-main)]'
-                                    }`}
+                                      }`}
                                   >
                                     {failed ? '—' : entry.rank}
                                   </span>
@@ -2567,7 +2563,7 @@ export function MLStudioModal() {
                               ...Array.from(
                                 new Set(
                                   selectedSession?.leaderboard.map((entry) => entry.algorithm) ??
-                                    availableAlgorithms,
+                                  availableAlgorithms,
                                 ),
                               ).map((algorithm) => ({ value: algorithm, label: algorithm })),
                             ]}
@@ -2742,9 +2738,8 @@ export function MLStudioModal() {
                                     return (
                                       <tr
                                         key={trial.trial_number}
-                                        className={`border-b border-[var(--border-color)] last:border-b-0 ${
-                                          best ? 'bg-[var(--bg-canvas)]' : ''
-                                        }`}
+                                        className={`border-b border-[var(--border-color)] last:border-b-0 ${best ? 'bg-[var(--bg-canvas)]' : ''
+                                          }`}
                                       >
                                         <td className="px-2 py-1.5">
                                           <span className="inline-flex items-center gap-1 font-mono font-bold text-[var(--text-main)]">
@@ -2802,11 +2797,10 @@ export function MLStudioModal() {
                             return (
                               <div
                                 key={key}
-                                className={`border-[length:var(--border-width)] p-2 rounded-[var(--border-radius)] ${
-                                  active
+                                className={`border-[length:var(--border-width)] p-2 rounded-[var(--border-radius)] ${active
                                     ? 'border-[var(--accent-primary)] bg-[var(--bg-canvas)]'
                                     : 'border-[var(--border-color)] bg-[var(--bg-input)]'
-                                }`}
+                                  }`}
                               >
                                 <div className="flex items-start justify-between gap-2">
                                   <button
@@ -3024,13 +3018,30 @@ export function MLStudioModal() {
                 : 'Screening idle'}
               {tuningJob ? ` · Tuning: ${tuningJob.status}` : ''}
             </p>
-            <button
-              type="button"
-              onClick={() => setActiveConfigNodeId(null)}
-              className={SECONDARY_BUTTON}
-            >
-              Close
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (node) {
+                    void deleteNode(node.id).then(() => {
+                      addToast('info', `${node.data.label} deleted.`);
+                      setActiveConfigNodeId(null);
+                    });
+                  }
+                }}
+                className={DANGER_BUTTON}
+              >
+                <Trash2 size={13} />
+                Delete Node
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveConfigNodeId(null)}
+                className={SECONDARY_BUTTON}
+              >
+                Close
+              </button>
+            </div>
           </footer>
         </div>
       </div>

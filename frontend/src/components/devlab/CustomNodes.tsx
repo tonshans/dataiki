@@ -7,10 +7,13 @@ import {
   Layers,
   Loader2,
   Terminal,
+  Trash2,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Handle, Position } from '@xyflow/react';
 import type { Node, NodeProps, NodeTypes } from '@xyflow/react';
+import { usePipelineStore } from '../../store/usePipelineStore';
+import { useUIStore } from '../../store/useUIStore';
 import type { CanvasNodeData, UINodeKind } from '../../types/dataiki';
 
 type DataikiFlowNode = Node<CanvasNodeData, UINodeKind>;
@@ -100,12 +103,22 @@ export function CustomNode({
   isConnectable = true,
   selected,
 }: NodeProps<DataikiFlowNode>) {
+  const deleteNode = usePipelineStore((state) => state.deleteNode);
+  const addToast = useUIStore((state) => state.addToast);
+
   const kind = data.ui_node_kind;
   const Icon = NODE_ICON[kind] ?? Layers;
   const label = data.label || NODE_LABEL[kind] || 'Node';
   const summary = describeNode(data);
   const hasError = Boolean(data.error_message);
   const isLoading = Boolean(data.is_loading);
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    void deleteNode(data.node_id).then(() => {
+      addToast('info', `${label} deleted.`);
+    });
+  };
 
   return (
     <div
@@ -118,6 +131,17 @@ export function CustomNode({
           : 'border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] shadow-[var(--shadow-card)]'
       } ${selected ? 'outline outline-2 outline-offset-2 outline-[var(--accent-primary)]' : ''}`}
     >
+      <button
+        type="button"
+        onClick={handleDelete}
+        aria-label={`Delete ${label}`}
+        title={`Delete ${label}`}
+        className={`nodrag absolute -left-2 -top-2 z-10 flex h-5 w-5 items-center justify-center border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--accent-danger)] rounded-[var(--border-radius)] transition-opacity hover:bg-[var(--accent-danger)] hover:text-[var(--bg-card)] shadow-[var(--shadow-card)] ${
+          selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        }`}
+      >
+        <Trash2 size={11} />
+      </button>
       <div
         className={`flex h-full w-full items-center justify-center rounded-[var(--border-radius)] ${
           hasError

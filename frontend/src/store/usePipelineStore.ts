@@ -11,6 +11,7 @@ import {
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import * as api from '../api/client';
+import { useUIStore } from './useUIStore';
 import type {
   ApiKeyItem,
   BackendNodeType,
@@ -350,6 +351,7 @@ interface PipelineState {
   onConnect: (connection: Connection) => void;
   addNodeFromPalette: (kind: UINodeKind, position?: { x: number; y: number }) => string;
   updateNodeConfig: (nodeId: string, patch: Partial<CanvasNodeData>) => void;
+  deleteNode: (nodeId: string) => Promise<void>;
 
   fetchNodePreview: (nodeId?: string) => Promise<TabularPreviewData>;
   saveNodeRecipe: (nodeId: string, recipeSteps: RecipeStep[]) => Promise<TabularPreviewData>;
@@ -545,10 +547,10 @@ export const usePipelineStore = create<PipelineState>()(
             return {
               projects: exists
                 ? state.projects.map((project) =>
-                    project.project_key === detail.project.project_key
-                      ? detail.project
-                      : project,
-                  )
+                  project.project_key === detail.project.project_key
+                    ? detail.project
+                    : project,
+                )
                 : [...state.projects, detail.project],
               nodes: loaded.nodes,
               edges: loaded.edges,
@@ -596,6 +598,12 @@ export const usePipelineStore = create<PipelineState>()(
         );
         set((state) => ({
           nodes: applyNodeChanges(changes, state.nodes),
+          edges:
+            removedIds.size > 0
+              ? state.edges.filter(
+                (edge) => !removedIds.has(edge.source) && !removedIds.has(edge.target),
+              )
+              : state.edges,
           selectedNodeId:
             state.selectedNodeId && removedIds.has(state.selectedNodeId)
               ? null
@@ -605,6 +613,23 @@ export const usePipelineStore = create<PipelineState>()(
               ? null
               : state.tabularPreview,
         }));
+
+        if (removedIds.size > 0) {
+          const current = get();
+          const activeConfigNodeId = useUIStore.getState().activeConfigNodeId;
+          if (activeConfigNodeId && removedIds.has(activeConfigNodeId)) {
+            useUIStore.getState().setActiveConfigNodeId(null);
+          }
+          if (current.activeProjectKey) {
+            const dag = dagFromCanvas(current.activeProjectKey, current.nodes, current.edges);
+            void api.saveDag(current.activeProjectKey, dag).catch((err) => {
+              current.addProcessLog(
+                'WARN',
+                `Failed to sync pipeline after node removal: ${errorMessage(err)}`,
+              );
+            });
+          }
+        }
       },
 
       onEdgesChange: (changes) => {
@@ -725,13 +750,53 @@ export const usePipelineStore = create<PipelineState>()(
           nodes: state.nodes.map((node) =>
             node.id === nodeId
               ? {
-                  ...node,
-                  type: patch.ui_node_kind ?? node.type,
-                  data: { ...node.data, ...patch },
-                }
+                ...node,
+                type: patch.ui_node_kind ?? node.type,
+                data: { ...node.data, ...patch },
+              }
               : node,
           ),
         }));
+      },
+
+      deleteNode: async (nodeId) => {
+        const state = get();
+        const targetNode = state.nodes.find((item) => item.id === nodeId);
+        if (!targetNode) return;
+
+        const nextNodes = state.nodes.filter((node) => node.id !== nodeId);
+        const nextEdges = state.edges.filter(
+          (edge) => edge.source !== nodeId && edge.target !== nodeId,
+        );
+        const nextSelected = state.selectedNodeId === nodeId ? null : state.selectedNodeId;
+        const nextPreview =
+          state.tabularPreview?.node_id === nodeId ? null : state.tabularPreview;
+
+        set({
+          nodes: nextNodes,
+          edges: nextEdges,
+          selectedNodeId: nextSelected,
+          tabularPreview: nextPreview,
+        });
+
+        if (useUIStore.getState().activeConfigNodeId === nodeId) {
+          useUIStore.getState().setActiveConfigNodeId(null);
+        }
+
+        const label = targetNode.data.label || targetNode.id;
+        state.addProcessLog('INFO', `Node '${label}' deleted.`, nodeId);
+
+        if (state.activeProjectKey) {
+          const dag = dagFromCanvas(state.activeProjectKey, nextNodes, nextEdges);
+          try {
+            await api.saveDag(state.activeProjectKey, dag);
+          } catch (error) {
+            state.addProcessLog(
+              'WARN',
+              `Failed to sync pipeline after deleting '${label}': ${errorMessage(error)}`,
+            );
+          }
+        }
       },
 
       fetchNodePreview: async (nodeId) => {
@@ -835,7 +900,7 @@ export const usePipelineStore = create<PipelineState>()(
             mlSessions: sessions,
             activeSessionId:
               state.activeSessionId &&
-              sessions.some((session) => session.session_id === state.activeSessionId)
+                sessions.some((session) => session.session_id === state.activeSessionId)
                 ? state.activeSessionId
                 : (sessions[0]?.session_id ?? null),
           }));
@@ -1258,11 +1323,11 @@ export const usePipelineStore = create<PipelineState>()(
             productionJobs: state.productionJobs.map((item) =>
               item.job_script_id === jobScriptId
                 ? {
-                    ...item,
-                    last_status: 'completed',
-                    last_error: '',
-                    last_run_at: result.executed_at,
-                  }
+                  ...item,
+                  last_status: 'completed',
+                  last_error: '',
+                  last_run_at: result.executed_at,
+                }
                 : item,
             ),
           }));

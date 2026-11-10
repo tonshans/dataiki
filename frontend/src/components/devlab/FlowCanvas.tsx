@@ -139,10 +139,13 @@ function FlowCanvasInner() {
   const onConnect = usePipelineStore((state) => state.onConnect);
   const addNodeFromPalette = usePipelineStore((state) => state.addNodeFromPalette);
   const setSelectedNodeId = usePipelineStore((state) => state.setSelectedNodeId);
+  const selectedNodeId = usePipelineStore((state) => state.selectedNodeId);
+  const deleteNode = usePipelineStore((state) => state.deleteNode);
   const fetchNodePreview = usePipelineStore((state) => state.fetchNodePreview);
 
   const setActiveBottomTab = useUIStore((state) => state.setActiveBottomTab);
   const setActiveConfigNodeId = useUIStore((state) => state.setActiveConfigNodeId);
+  const activeConfigNodeId = useUIStore((state) => state.activeConfigNodeId);
   const addToast = useUIStore((state) => state.addToast);
 
   const { screenToFlowPosition } = useReactFlow<FlowNode, Edge>();
@@ -175,6 +178,36 @@ function FlowCanvasInner() {
       window.removeEventListener('drop', handleDragEnd);
     };
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      if (activeConfigNodeId) return;
+
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (selectedNodeId && !selectedNodeId.startsWith('ghost_')) {
+        event.preventDefault();
+        const targetNode = nodes.find((n) => n.id === selectedNodeId);
+        const label = targetNode?.data.label || 'Node';
+        void deleteNode(selectedNodeId).then(() => {
+          addToast('info', `${label} deleted.`);
+        });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeConfigNodeId, addToast, deleteNode, nodes, selectedNodeId]);
 
   const ghostNodes = useMemo<FlowNode[]>(() => {
     if (isPaletteDragging) return [];
@@ -333,6 +366,7 @@ function FlowCanvasInner() {
         onNodeDoubleClick={handleNodeDoubleClick}
         onPaneClick={handlePaneClick}
         isValidConnection={isValidConnection}
+        deleteKeyCode={['Delete', 'Backspace']}
         fitView
         minZoom={0.25}
         maxZoom={2}
