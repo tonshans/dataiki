@@ -1543,7 +1543,9 @@ export function MLStudioModal() {
       addToast('warning', 'Select a screening session before tuning an algorithm.');
       return;
     }
-    void beginTuning(entry.algorithm, selectedSession, 50, false);
+    setTuningAlgorithm(entry.algorithm);
+    setActiveTab(3);
+    addToast('info', `Algorithm '${entry.algorithm}' selected. Adjust trials and start tuning.`);
   };
 
   const handleRunMoreTrials = () => {
@@ -2505,23 +2507,19 @@ export function MLStudioModal() {
                                       type="button"
                                       onClick={() => openEntryImportance(entry)}
                                       className={`${SECONDARY_BUTTON} px-2 py-1 text-[10px]`}
-                                      title="Open feature importance and evaluation matrix"
+                                      title="Open model metrics and evaluation"
                                     >
                                       <BarChart3 size={11} />
-                                      Feature Importance
+                                      Metrics
                                     </button>
                                     <button
                                       type="button"
                                       onClick={() => handleTuneRow(entry)}
-                                      disabled={!selectedSession || tuningBusy}
+                                      disabled={!selectedSession}
                                       className={`${SECONDARY_BUTTON} px-2 py-1 text-[10px]`}
-                                      title="Send this algorithm to Optuna tuning"
+                                      title="Select this algorithm in Tuning Dashboard"
                                     >
-                                      {tuningBusy && tuningAlgorithm === entry.algorithm ? (
-                                        <Loader2 size={11} className="animate-spin" />
-                                      ) : (
-                                        <Zap size={11} />
-                                      )}
+                                      <Zap size={11} />
                                       Tune
                                     </button>
                                   </div>

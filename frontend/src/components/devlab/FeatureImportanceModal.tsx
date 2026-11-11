@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Activity,
@@ -100,6 +100,7 @@ function Panel({
 }
 
 function ConfusionMatrix({ matrix }: { matrix: number[][] }) {
+  const [matrixMode, setMatrixMode] = useState<'percent' | 'count'>('percent');
   const { rows, columns } = matrixShape(matrix);
   if (rows === 0 || columns === 0) {
     return (
@@ -109,6 +110,13 @@ function ConfusionMatrix({ matrix }: { matrix: number[][] }) {
     );
   }
 
+  const totalSamples = useMemo(() => {
+    return matrix.reduce(
+      (acc, row) => acc + row.reduce((rAcc, val) => rAcc + (Number(val) || 0), 0),
+      0,
+    );
+  }, [matrix]);
+
   const maxCell = Math.max(
     1,
     ...matrix.flatMap((row) => row.map((value) => Number(value) || 0)),
@@ -117,20 +125,50 @@ function ConfusionMatrix({ matrix }: { matrix: number[][] }) {
 
   return (
     <div>
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] px-2 py-1 text-[10px] font-bold text-[var(--text-muted)] rounded-[var(--border-radius)]">
-          Rows = actual class · Columns = predicted class
-        </span>
-        {accuracy !== null && (
-          <>
-            <span className="border-[length:var(--border-width)] border-[var(--border-color)] px-2 py-1 text-[10px] font-bold text-[var(--accent-secondary)] rounded-[var(--border-radius)]">
-              Accuracy {formatPercent(accuracy)}
-            </span>
-            <span className="border-[length:var(--border-width)] border-[var(--border-color)] px-2 py-1 text-[10px] font-bold text-[var(--accent-danger)] rounded-[var(--border-radius)]">
-              Error {formatPercent(1 - accuracy)}
-            </span>
-          </>
-        )}
+      <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] px-2 py-1 text-[10px] font-bold text-[var(--text-muted)] rounded-[var(--border-radius)]">
+            Rows = actual · Columns = predicted
+          </span>
+          {accuracy !== null && (
+            <>
+              <span className="flex items-center gap-1 border-[length:var(--border-width)] border-[var(--accent-secondary)] bg-[var(--accent-secondary)]/10 px-2 py-1 text-[10px] font-bold text-[var(--accent-secondary)] rounded-[var(--border-radius)]">
+                <span className="inline-block h-2 w-2 rounded-full bg-[var(--accent-secondary)]" />
+                True (Correct) {formatPercent(accuracy)}
+              </span>
+              <span className="flex items-center gap-1 border-[length:var(--border-width)] border-[var(--accent-danger)] bg-[var(--accent-danger)]/10 px-2 py-1 text-[10px] font-bold text-[var(--accent-danger)] rounded-[var(--border-radius)]">
+                <span className="inline-block h-2 w-2 rounded-full bg-[var(--accent-danger)]" />
+                False (Error) {formatPercent(1 - accuracy)}
+              </span>
+            </>
+          )}
+        </div>
+
+        {/* View Mode Switcher: Persentase (default) vs Record Count */}
+        <div className="flex items-center rounded-[var(--border-radius)] border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-canvas)] p-0.5 text-[10px]">
+          <button
+            type="button"
+            onClick={() => setMatrixMode('percent')}
+            className={`rounded px-2 py-0.5 font-bold transition-colors ${matrixMode === 'percent'
+                ? 'bg-[var(--accent-primary)] text-white shadow-sm'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'
+              }`}
+            title="Tampilkan persentase terhadap total data (default)"
+          >
+            Persentase (%)
+          </button>
+          <button
+            type="button"
+            onClick={() => setMatrixMode('count')}
+            className={`rounded px-2 py-0.5 font-bold transition-colors ${matrixMode === 'count'
+                ? 'bg-[var(--accent-primary)] text-white shadow-sm'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'
+              }`}
+            title="Tampilkan jumlah baris data riil"
+          >
+            Record Count
+          </button>
+        </div>
       </div>
 
       <div className="overflow-auto">
@@ -158,23 +196,68 @@ function ConfusionMatrix({ matrix }: { matrix: number[][] }) {
                 </th>
                 {Array.from({ length: columns }, (_, columnIndex) => {
                   const value = Number(row[columnIndex] ?? 0);
+                  const isFinite = Number.isFinite(value);
+                  const isCorrect = rowIndex === columnIndex;
+                  const cellTag =
+                    rows === 2 && columns === 2
+                      ? rowIndex === 0 && columnIndex === 0
+                        ? 'TN'
+                        : rowIndex === 0 && columnIndex === 1
+                          ? 'FP'
+                          : rowIndex === 1 && columnIndex === 0
+                            ? 'FN'
+                            : 'TP'
+                      : isCorrect
+                        ? 'True'
+                        : 'False';
+
+                  const displayValue = !isFinite
+                    ? '—'
+                    : matrixMode === 'percent'
+                      ? totalSamples > 0
+                        ? `${((value / totalSamples) * 100).toFixed(2)}%`
+                        : '0.00%'
+                      : value.toLocaleString();
+
+                  const cellTitle = isFinite
+                    ? `${cellTag} (${isCorrect ? 'True / Correct' : 'False / Error'}): ${value.toLocaleString()} records (${totalSamples > 0 ? ((value / totalSamples) * 100).toFixed(2) : 0}%)`
+                    : '—';
+
+                  const overlayColor = isCorrect
+                    ? 'var(--accent-secondary)'
+                    : 'var(--accent-danger)';
+
+                  const overlayOpacity = !isFinite || value === 0
+                    ? 0.05
+                    : 0.15 + (Math.max(value, 0) / maxCell) * 0.55;
+
                   return (
                     <td
                       key={columnIndex}
-                      className="relative min-w-[64px] border-[length:var(--border-width)] border-[var(--border-color)] px-2 py-1.5"
+                      className="relative min-w-[76px] border-[length:var(--border-width)] border-[var(--border-color)] px-2.5 py-2"
+                      title={cellTitle}
                     >
                       <span
                         aria-hidden="true"
-                        className="pointer-events-none absolute inset-0 bg-[var(--accent-primary)]"
+                        className="pointer-events-none absolute inset-0"
                         style={{
-                          opacity: Number.isFinite(value)
-                            ? 0.08 + (Math.max(value, 0) / maxCell) * 0.55
-                            : 0,
+                          backgroundColor: overlayColor,
+                          opacity: overlayOpacity,
                         }}
                       />
-                      <span className="relative font-mono font-bold text-[var(--text-main)]">
-                        {Number.isFinite(value) ? value.toLocaleString() : '—'}
-                      </span>
+                      <div className="relative flex items-center justify-center gap-1 font-mono text-[11px] font-bold">
+                        <span
+                          className={`text-[9px] font-semibold ${isCorrect
+                              ? 'text-[var(--accent-secondary)]'
+                              : value > 0
+                                ? 'text-[var(--accent-danger)]'
+                                : 'text-[var(--text-muted)]'
+                            }`}
+                        >
+                          [{cellTag}]
+                        </span>
+                        <span className="text-[var(--text-main)]">{displayValue}</span>
+                      </div>
                     </td>
                   );
                 })}
@@ -242,10 +325,10 @@ export function FeatureImportanceModal() {
                 id="feature-importance-title"
                 className="truncate text-lg font-bold text-[var(--text-main)]"
               >
-                {target.title || 'Model Evaluation'}
+                {target.title || 'Model Metrics & Evaluation'}
               </h2>
               <p className="truncate text-xs text-[var(--text-muted)]">
-                Feature importance and evaluation matrix
+                Evaluation metrics, confusion matrix, and feature importance
               </p>
             </div>
           </div>
@@ -293,11 +376,10 @@ export function FeatureImportanceModal() {
                       </span>
                       <span className="h-3.5 min-w-0 flex-1 overflow-hidden bg-[var(--bg-canvas)]">
                         <span
-                          className={`block h-full ${
-                            value < 0
+                          className={`block h-full ${value < 0
                               ? 'bg-[var(--accent-danger)]'
                               : 'bg-[var(--accent-primary)]'
-                          }`}
+                            }`}
                           style={{
                             width: `${(Math.abs(value) / features.maxImportance) * 100}%`,
                           }}
@@ -323,20 +405,22 @@ export function FeatureImportanceModal() {
                     No evaluation metrics returned.
                   </p>
                 ) : (
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {metricEntries.map(([key, value]) => (
-                      <div
-                        key={key}
-                        className="border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] p-2 rounded-[var(--border-radius)]"
-                      >
-                        <p className="truncate text-[9px] font-bold uppercase tracking-widest text-[var(--text-muted)]" title={metricLabel(key)}>
-                          {metricLabel(key)}
-                        </p>
-                        <p className="mt-0.5 font-mono text-sm font-bold text-[var(--text-main)]">
-                          {formatMetric(Number(value))}
-                        </p>
-                      </div>
-                    ))}
+                  <div className="rounded-[var(--border-radius)] border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] p-1.5">
+                    <ul className="divide-y divide-[var(--border-color)] font-mono text-xs">
+                      {metricEntries.map(([key, value]) => (
+                        <li
+                          key={key}
+                          className="flex items-center justify-between px-2.5 py-1.5 rounded transition-colors hover:bg-[var(--bg-hover)]"
+                        >
+                          <span className="font-sans text-[11px] font-medium text-[var(--text-muted)]">
+                            {metricLabel(key)}
+                          </span>
+                          <span className="text-[11px] font-bold text-[var(--text-main)]">
+                            {formatMetric(Number(value))}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 )}
               </Panel>
