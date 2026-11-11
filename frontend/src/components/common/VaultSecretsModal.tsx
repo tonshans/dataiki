@@ -102,6 +102,7 @@ export function VaultSecretsModal() {
   const [connectionType, setConnectionType] = useState<ConnectionType>('postgres');
   const [connectionUri, setConnectionUri] = useState('');
   const [headersJson, setHeadersJson] = useState('{}');
+  const [isReadOnly, setIsReadOnly] = useState(true);
   const [isSavingConnection, setIsSavingConnection] = useState(false);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [connectionTest, setConnectionTest] = useState<{
@@ -109,6 +110,7 @@ export function VaultSecretsModal() {
     message: string;
   } | null>(null);
   const [deletingConnectionId, setDeletingConnectionId] = useState<string | null>(null);
+  const [togglingConnectionId, setTogglingConnectionId] = useState<string | null>(null);
 
   const [secretKeyName, setSecretKeyName] = useState('');
   const [secretValue, setSecretValue] = useState('');
@@ -199,6 +201,7 @@ export function VaultSecretsModal() {
         conn_type: connectionType,
         connection_uri: uri,
         headers,
+        is_read_only: isReadOnly,
       });
       const secured = secureConnection(saved);
       usePipelineStore.setState((state) => ({
@@ -210,12 +213,35 @@ export function VaultSecretsModal() {
       setConnectionName('');
       setConnectionUri('');
       setHeadersJson('{}');
+      setIsReadOnly(true);
       setConnectionTest(null);
       addToast('success', `Connection '${name}' saved.`);
     } catch (error) {
       addToast('error', `Failed to save connection: ${messageOf(error)}`);
     } finally {
       setIsSavingConnection(false);
+    }
+  };
+
+  const toggleConnectionReadOnly = async (connection: ConnectionItem) => {
+    const nextVal = !(connection.is_read_only ?? true);
+    setTogglingConnectionId(connection.conn_id);
+    try {
+      const updated = await api.patchConnectionReadOnly(connection.conn_id, nextVal);
+      const secured = secureConnection(updated);
+      usePipelineStore.setState((state) => ({
+        connections: state.connections.map((c) =>
+          c.conn_id === connection.conn_id ? secured : c,
+        ),
+      }));
+      addToast(
+        'success',
+        `Connection '${connection.name}' set to ${nextVal ? 'Read-Only' : 'Read-Write'}.`,
+      );
+    } catch (error) {
+      addToast('error', `Failed to update permission: ${messageOf(error)}`);
+    } finally {
+      setTogglingConnectionId(null);
     }
   };
 
@@ -459,47 +485,81 @@ export function VaultSecretsModal() {
                       No saved connections yet.
                     </div>
                   ) : (
-                    visibleConnections.map((connection) => (
-                      <div
-                        key={connection.conn_id}
-                        className="border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] p-3 rounded-[var(--border-radius)]"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="truncate text-sm font-bold text-[var(--text-main)]">
-                                {connection.name}
-                              </span>
-                              <span className="shrink-0 bg-[var(--accent-primary)] px-1.5 py-0.5 text-[10px] font-bold uppercase text-[var(--bg-card)] rounded-[var(--border-radius)]">
-                                {connection.conn_type}
-                              </span>
+                    visibleConnections.map((connection) => {
+                      const isRO = connection.is_read_only ?? true;
+                      return (
+                        <div
+                          key={connection.conn_id}
+                          className="border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] p-3 rounded-[var(--border-radius)]"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="truncate text-sm font-bold text-[var(--text-main)]">
+                                  {connection.name}
+                                </span>
+                                <span className="shrink-0 bg-[var(--accent-primary)] px-1.5 py-0.5 text-[10px] font-bold uppercase text-[var(--bg-card)] rounded-[var(--border-radius)]">
+                                  {connection.conn_type}
+                                </span>
+                                <span
+                                  className={`shrink-0 px-1.5 py-0.5 text-[10px] font-bold uppercase rounded-[var(--border-radius)] border-[length:var(--border-width)] ${
+                                    isRO
+                                      ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-400'
+                                      : 'border-amber-500/40 bg-amber-500/15 text-amber-400'
+                                  }`}
+                                >
+                                  {isRO ? 'Read-Only' : 'Read-Write'}
+                                </span>
+                              </div>
+                              <p
+                                className="mt-1 truncate font-mono text-xs text-[var(--text-muted)]"
+                                title={maskedConnectionUri(connection)}
+                              >
+                                {maskedConnectionUri(connection)}
+                              </p>
+                              <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+                                Created: {formatDate(connection.created_at)}
+                              </p>
                             </div>
-                            <p
-                              className="mt-1 truncate font-mono text-xs text-[var(--text-muted)]"
-                              title={maskedConnectionUri(connection)}
-                            >
-                              {maskedConnectionUri(connection)}
-                            </p>
-                            <p className="mt-1 text-[10px] text-[var(--text-muted)]">
-                              Created: {formatDate(connection.created_at)}
-                            </p>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => void deleteConnection(connection.conn_id)}
-                            disabled={deletingConnectionId === connection.conn_id}
-                            className="flex shrink-0 items-center gap-1 border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] px-2 py-1 text-[10px] font-bold text-[var(--accent-danger)] rounded-[var(--border-radius)] transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {deletingConnectionId === connection.conn_id ? (
-                              <Loader2 size={12} className="animate-spin" />
-                            ) : (
-                              <Trash2 size={12} />
-                            )}
-                            Delete
-                          </button>
+
+                          <div className="mt-2.5 flex items-center justify-between border-t border-[var(--border-color)] pt-2">
+                            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                checked={isRO}
+                                onChange={() => void toggleConnectionReadOnly(connection)}
+                                disabled={togglingConnectionId === connection.conn_id}
+                                className="h-3.5 w-3.5 accent-[var(--accent-primary)] cursor-pointer rounded"
+                              />
+                              <span className="text-xs font-bold text-[var(--text-main)]">
+                                Read-Only
+                              </span>
+                              {togglingConnectionId === connection.conn_id && (
+                                <Loader2 size={12} className="animate-spin text-[var(--accent-primary)]" />
+                              )}
+                              <span className="text-[10px] text-[var(--text-muted)]">
+                                {isRO ? '(Insert/Update blocked)' : '(Insert/Update allowed)'}
+                              </span>
+                            </label>
+
+                            <button
+                              type="button"
+                              onClick={() => void deleteConnection(connection.conn_id)}
+                              disabled={deletingConnectionId === connection.conn_id}
+                              className="flex shrink-0 items-center gap-1 border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] px-2 py-1 text-[10px] font-bold text-[var(--accent-danger)] rounded-[var(--border-radius)] transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {deletingConnectionId === connection.conn_id ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : (
+                                <Trash2 size={12} />
+                              )}
+                              Delete
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </section>
@@ -561,6 +621,26 @@ export function VaultSecretsModal() {
                       />
                     </label>
                   )}
+
+                  <div className="border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] p-2.5 rounded-[var(--border-radius)]">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={isReadOnly}
+                        onChange={(event) => setIsReadOnly(event.target.checked)}
+                        className="h-4 w-4 accent-[var(--accent-primary)] cursor-pointer rounded"
+                      />
+                      <span className="text-xs font-bold text-[var(--text-main)]">
+                        Read-Only
+                      </span>
+                      <span className="text-[10px] text-[var(--accent-primary)] font-semibold">
+                        (Default)
+                      </span>
+                    </label>
+                    <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+                      Koneksi dibatasi hanya untuk query SELECT. Hilangkan centang agar koneksi diizinkan melakukan INSERT, UPDATE, atau CREATE TABLE (Sink).
+                    </p>
+                  </div>
                   {connectionTest && (
                     <p
                       className={`border-[length:var(--border-width)] border-[var(--border-color)] p-2 text-xs rounded-[var(--border-radius)] ${

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS connections (
     conn_type TEXT NOT NULL,
     connection_uri TEXT NOT NULL,
     headers_json TEXT DEFAULT '{}',
+    is_read_only INTEGER DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -132,6 +133,11 @@ def init_db() -> None:
     """Initialize all SQLite tables defined in the schema."""
     with get_db() as conn:
         conn.executescript(SCHEMA_SQL)
+        # Auto-migration for connections table columns
+        cursor = conn.execute("PRAGMA table_info(connections)")
+        cols = {row["name"] for row in cursor.fetchall()}
+        if "is_read_only" not in cols:
+            conn.execute("ALTER TABLE connections ADD COLUMN is_read_only INTEGER DEFAULT 1")
 
 
 # Initialize database schema on load

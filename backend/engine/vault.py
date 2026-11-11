@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import sqlite3
 import uuid
 from typing import Any, Dict, List, Optional, Union
@@ -11,6 +12,50 @@ import httpx
 import polars as pl
 
 logger = logging.getLogger(__name__)
+
+_MUTATION_KEYWORDS = {
+    "insert",
+    "update",
+    "delete",
+    "drop",
+    "alter",
+    "truncate",
+    "create",
+    "replace",
+    "merge",
+    "grant",
+    "revoke",
+    "call",
+    "exec",
+    "execute",
+}
+
+
+def is_modifying_query(sql: str) -> bool:
+    """Detect if an SQL statement performs mutations (INSERT, UPDATE, DELETE, DDL)."""
+    if not sql or not isinstance(sql, str):
+        return False
+    # Strip single-line comments (-- ...) and multi-line comments (/* ... */)
+    cleaned = re.sub(r"--[^\n]*", " ", sql)
+    cleaned = re.sub(r"/\*.*?\*/", " ", cleaned, flags=re.DOTALL)
+    cleaned = cleaned.strip()
+
+    tokens = [t.lower() for t in re.findall(r"[a-zA-Z_]+", cleaned)]
+    if not tokens:
+        return False
+
+    first = tokens[0]
+    if first in _MUTATION_KEYWORDS:
+        return True
+
+    # If query starts with WITH (CTE), check if mutation verbs exist in statement
+    if first == "with":
+        for kw in ("insert", "update", "delete", "drop", "alter", "truncate", "create", "replace"):
+            if kw in tokens:
+                return True
+
+    return False
+
 
 try:
     import oracledb
@@ -39,11 +84,18 @@ class DatabaseConnectionWrapper:
         self.conn_type: str = conn_info.get("conn_type", "")
         self.connection_uri: str = conn_info.get("connection_uri", "")
         self.headers: Dict[str, Any] = conn_info.get("headers", {})
+        self.is_read_only: bool = bool(conn_info.get("is_read_only", True))
 
     def query_df(self, sql: str, params: Optional[Dict[str, Any]] = None) -> pl.DataFrame:
         """Execute a query and load the result into a Polars DataFrame."""
         if self.conn_type == "rest_api":
             raise ValueError("Cannot execute SQL query on a REST API connection.")
+        if self.is_read_only and is_modifying_query(sql):
+            raise PermissionError(
+                f"Database connection '{self.name}' is marked as Read-Only. "
+                "Mutation queries (INSERT, UPDATE, DELETE, DDL) are prohibited. "
+                "To allow modifications, uncheck 'Read-Only' on this connection in the Vault."
+            )
         engine = create_engine(self.connection_uri)
         try:
             with engine.connect() as connection:
@@ -56,6 +108,12 @@ class DatabaseConnectionWrapper:
         """Execute an SQL statement (DML/DDL) on the remote database."""
         if self.conn_type == "rest_api":
             raise ValueError("Cannot execute SQL statement on a REST API connection.")
+        if self.is_read_only:
+            raise PermissionError(
+                f"Database connection '{self.name}' is marked as Read-Only. "
+                "DML/DDL execution is prohibited. "
+                "To allow modifications, uncheck 'Read-Only' on this connection in the Vault."
+            )
         engine = create_engine(self.connection_uri)
         try:
             with engine.begin() as connection:
@@ -78,6 +136,11 @@ def _format_conn_row(row) -> Dict[str, Any]:
             headers = json.loads(raw_headers)
         except Exception:
             headers = {}
+
+    is_ro = True
+    if "is_read_only" in row.keys():
+        is_ro = bool(row["is_read_only"])
+
     return {
         "conn_id": row["conn_id"],
         "name": row["name"],
@@ -85,6 +148,7 @@ def _format_conn_row(row) -> Dict[str, Any]:
         "connection_uri": row["connection_uri"],
         "headers": headers,
         "headers_json": raw_headers,
+        "is_read_only": is_ro,
         "created_at": row["created_at"],
     }
 
@@ -98,15 +162,16 @@ def create_connection(conn_data: Union[ConnectionCreate, Dict[str, Any]]) -> Dic
     connection_uri = data["connection_uri"]
     headers = data.get("headers", {})
     headers_json = json.dumps(headers) if isinstance(headers, dict) else str(headers)
+    is_read_only = 1 if data.get("is_read_only", True) else 0
 
     with get_db() as db:
         try:
             db.execute(
                 """
-                INSERT INTO connections (conn_id, name, conn_type, connection_uri, headers_json)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO connections (conn_id, name, conn_type, connection_uri, headers_json, is_read_only)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (conn_id, name, conn_type, connection_uri, headers_json),
+                (conn_id, name, conn_type, connection_uri, headers_json, is_read_only),
             )
         except sqlite3.IntegrityError as exc:
             raise ValueError(f"Connection name '{name}' already exists.") from exc
@@ -122,7 +187,7 @@ def get_connection(conn_id_or_name: str) -> Optional[Dict[str, Any]]:
     with get_db() as db:
         row = db.execute(
             """
-            SELECT conn_id, name, conn_type, connection_uri, headers_json, created_at
+            SELECT conn_id, name, conn_type, connection_uri, headers_json, is_read_only, created_at
             FROM connections
             WHERE conn_id = ? OR name = ?
             LIMIT 1
@@ -140,7 +205,7 @@ def list_connections() -> List[Dict[str, Any]]:
     with get_db() as db:
         rows = db.execute(
             """
-            SELECT conn_id, name, conn_type, connection_uri, headers_json, created_at
+            SELECT conn_id, name, conn_type, connection_uri, headers_json, is_read_only, created_at
             FROM connections
             ORDER BY created_at DESC
             """
@@ -160,16 +225,17 @@ def update_connection(conn_id: str, conn_data: Union[ConnectionCreate, Dict[str,
     connection_uri = data.get("connection_uri", existing["connection_uri"])
     headers = data.get("headers", existing["headers"])
     headers_json = json.dumps(headers) if isinstance(headers, dict) else str(headers)
+    is_read_only = 1 if data.get("is_read_only", existing.get("is_read_only", True)) else 0
 
     with get_db() as db:
         try:
             db.execute(
                 """
                 UPDATE connections
-                SET name = ?, conn_type = ?, connection_uri = ?, headers_json = ?
+                SET name = ?, conn_type = ?, connection_uri = ?, headers_json = ?, is_read_only = ?
                 WHERE conn_id = ?
                 """,
-                (name, conn_type, connection_uri, headers_json, conn_id),
+                (name, conn_type, connection_uri, headers_json, is_read_only, conn_id),
             )
         except sqlite3.IntegrityError as exc:
             raise ValueError(f"Connection name '{name}' already exists.") from exc

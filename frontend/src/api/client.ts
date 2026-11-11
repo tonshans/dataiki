@@ -745,6 +745,7 @@ export interface ConnectionPayload {
   conn_type: ConnectionItem['conn_type'];
   connection_uri: string;
   headers?: Record<string, string>;
+  is_read_only?: boolean;
 }
 
 function adaptConnection(raw: any): ConnectionItem {
@@ -754,6 +755,7 @@ function adaptConnection(raw: any): ConnectionItem {
     conn_type: raw?.conn_type,
     connection_uri: String(raw?.connection_uri ?? ''),
     headers_json: String(raw?.headers_json ?? JSON.stringify(raw?.headers ?? {})),
+    is_read_only: raw?.is_read_only !== undefined ? Boolean(raw.is_read_only) : true,
     created_at: raw?.created_at,
   };
 }
@@ -777,6 +779,18 @@ export async function updateConnection(
     await apiRequest(`/system/connections/${segment(connId)}`, {
       method: 'PUT',
       body: jsonBody({ ...payload, conn_id: connId }),
+    }),
+  );
+}
+
+export async function patchConnectionReadOnly(
+  connId: string,
+  isReadOnly: boolean,
+): Promise<ConnectionItem> {
+  return adaptConnection(
+    await apiRequest(`/system/connections/${segment(connId)}/read-only`, {
+      method: 'PATCH',
+      body: jsonBody({ is_read_only: isReadOnly }),
     }),
   );
 }

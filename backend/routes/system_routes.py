@@ -37,6 +37,7 @@ from backend.engine.vault import (
 )
 from backend.schemas import (
     ConnectionCreate,
+    ConnectionReadOnlyPatch,
     ConnectionTestRequest,
     JanitorPurgeRequest,
     ProjectCreate,
@@ -152,6 +153,15 @@ def update_vault_connection(conn_id: str, payload: ConnectionCreate) -> Dict[str
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Connection '{conn_id}' not found.")
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.patch("/connections/{conn_id}/read-only")
+def patch_connection_read_only(conn_id: str, payload: ConnectionReadOnlyPatch) -> Dict[str, Any]:
+    """Toggle read-only flag for an existing connection."""
+    existing = get_connection(conn_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Connection '{conn_id}' not found.")
+    return update_connection(conn_id, {**existing, "is_read_only": payload.is_read_only})
 
 
 @router.delete("/connections/{conn_id}")

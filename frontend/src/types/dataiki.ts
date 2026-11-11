@@ -87,6 +87,7 @@ export interface ConnectionItem {
   conn_type: 'mssql' | 'oracle' | 'postgres' | 'mysql' | 'sqlite' | 'rest_api';
   connection_uri: string;    // Dimasking di UI setelah disimpan
   headers_json: string;
+  is_read_only?: boolean;
   created_at?: string;
 }
 

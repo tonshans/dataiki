@@ -51,6 +51,12 @@ def _write_dataframe_to_db_sink(
     if not conn_info:
         raise KeyError(f"Destination connection '{conn_id}' not found in vault.")
 
+    if conn_info.get("is_read_only", True):
+        raise PermissionError(
+            f"Cannot write data: Destination connection '{conn_info.get('name', conn_id)}' is configured as Read-Only. "
+            "Please uncheck 'Read-Only' on this saved connection in the Vault to allow database sink operations."
+        )
+
     engine = create_engine(conn_info["connection_uri"])
     records = df.to_dicts()
     if not records:

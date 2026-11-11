@@ -325,9 +325,8 @@ function Toggle({
       </span>
       <span
         aria-hidden="true"
-        className={`relative mt-0.5 h-5 w-9 shrink-0 border-[length:var(--border-width)] border-[var(--border-color)] rounded-[var(--border-radius)] ${
-          checked ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-canvas)]'
-        }`}
+        className={`relative mt-0.5 h-5 w-9 shrink-0 border-[length:var(--border-width)] border-[var(--border-color)] rounded-[var(--border-radius)] ${checked ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-canvas)]'
+          }`}
       >
         <span
           className="absolute top-0 h-full w-1/2 border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] transition-all"
@@ -471,6 +470,10 @@ export function SchedulerMasterDetailTab() {
   const schedule = form.schedule_config;
   const source = form.source_config;
   const sink = form.sink_config;
+  const selectedSinkConnection = useMemo(
+    () => connections.find((c) => c.conn_id === sink.conn_id),
+    [connections, sink.conn_id],
+  );
   const editorTheme = activeTheme === 'midnight' ? 'vs-dark' : 'light';
 
   const patchForm = (patch: Partial<ProductionJobItem>) => {
@@ -758,20 +761,18 @@ export function SchedulerMasterDetailTab() {
                       <button
                         type="button"
                         onClick={() => selectSchedule(job.job_script_id ?? '')}
-                        className={`w-full border-[length:var(--border-width)] px-2 py-1.5 text-left rounded-[var(--border-radius)] transition-colors ${
-                          selected
+                        className={`w-full border-[length:var(--border-width)] px-2 py-1.5 text-left rounded-[var(--border-radius)] transition-colors ${selected
                             ? 'border-[var(--accent-primary)] bg-[var(--bg-canvas)]'
                             : 'border-[var(--border-color)] bg-[var(--bg-input)] hover:bg-[var(--bg-hover)]'
-                        }`}
+                          }`}
                       >
                         <div className="flex items-start justify-between gap-1.5">
                           <span className="min-w-0 break-words text-[11px] font-bold text-[var(--text-main)]">
                             {job.job_name}
                           </span>
                           <span
-                            className={`shrink-0 text-[10px] font-bold ${
-                              job.last_status === 'running' ? 'italic' : ''
-                            }`}
+                            className={`shrink-0 text-[10px] font-bold ${job.last_status === 'running' ? 'italic' : ''
+                              }`}
                             style={{ color: badge.color }}
                           >
                             {badge.text}
@@ -810,11 +811,10 @@ export function SchedulerMasterDetailTab() {
                   setActiveTab(tab.key);
                   setClearMenuOpen(false);
                 }}
-                className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 border-r-[length:var(--border-width)] border-[var(--border-color)] px-2 py-2 text-[11px] font-bold transition-colors last:border-r-0 ${
-                  activeTab === tab.key
+                className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 border-r-[length:var(--border-width)] border-[var(--border-color)] px-2 py-2 text-[11px] font-bold transition-colors last:border-r-0 ${activeTab === tab.key
                     ? 'bg-[var(--bg-card)] text-[var(--accent-primary)]'
                     : 'text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
-                }`}
+                  }`}
               >
                 {tab.icon}
                 <span className="break-words">[{tab.label}]</span>
@@ -897,11 +897,10 @@ export function SchedulerMasterDetailTab() {
                   </p>
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span
-                      className={`inline-flex items-center border-[length:var(--border-width)] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest rounded-[var(--border-radius)] ${
-                        scheduleEnabled
+                      className={`inline-flex items-center border-[length:var(--border-width)] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest rounded-[var(--border-radius)] ${scheduleEnabled
                           ? 'border-[var(--accent-secondary)] text-[var(--accent-secondary)]'
                           : 'border-[var(--border-color)] text-[var(--text-muted)]'
-                      }`}
+                        }`}
                     >
                       {scheduleEnabled ? 'Enabled' : 'Disabled'}
                     </span>
@@ -933,24 +932,24 @@ export function SchedulerMasterDetailTab() {
 
                     {(schedule.schedule_type === 'every_minute' ||
                       schedule.schedule_type === 'every_hour') && (
-                      <label className="block min-w-0">
-                        <span className={LABEL_CLASS}>
-                          Every{' '}
-                          {schedule.schedule_type === 'every_minute' ? 'Minutes' : 'Hours'}
-                        </span>
-                        <input
-                          type="number"
-                          min={1}
-                          value={schedule.interval_val}
-                          onChange={(event) =>
-                            patchSchedule({
-                              interval_val: Number(event.target.value) || 1,
-                            })
-                          }
-                          className={INPUT_CLASS}
-                        />
-                      </label>
-                    )}
+                        <label className="block min-w-0">
+                          <span className={LABEL_CLASS}>
+                            Every{' '}
+                            {schedule.schedule_type === 'every_minute' ? 'Minutes' : 'Hours'}
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            value={schedule.interval_val}
+                            onChange={(event) =>
+                              patchSchedule({
+                                interval_val: Number(event.target.value) || 1,
+                              })
+                            }
+                            className={INPUT_CLASS}
+                          />
+                        </label>
+                      )}
 
                     {schedule.schedule_type === 'daily_at' && (
                       <label className="block min-w-0">
@@ -1127,10 +1126,15 @@ export function SchedulerMasterDetailTab() {
                               <option value="">Select connection</option>
                               {dbConnections.map((connection) => (
                                 <option key={connection.conn_id} value={connection.conn_id}>
-                                  {connection.name}
+                                  {connection.name} ({connection.is_read_only ?? true ? 'Read-Only' : 'Read-Write'})
                                 </option>
                               ))}
                             </select>
+                            {selectedSinkConnection && (selectedSinkConnection.is_read_only ?? true) && (
+                              <p className="mt-1 text-[10px] text-[var(--accent-danger)] font-medium">
+                                Peringatan: Koneksi ini berstatus Read-Only. Hilangkan centang Read-Only di Vault agar penulisan sink diizinkan.
+                              </p>
+                            )}
                           </label>
                           <label className="block">
                             <span className={LABEL_CLASS}>Table Name</span>
@@ -1367,11 +1371,10 @@ export function SchedulerMasterDetailTab() {
                         key={tab}
                         type="button"
                         onClick={() => setActiveScript(tab)}
-                        className={`flex items-center gap-1 border-r-[length:var(--border-width)] border-[var(--border-color)] px-2 py-1.5 text-[10px] font-bold transition-colors last:border-r-0 ${
-                          activeScript === tab
+                        className={`flex items-center gap-1 border-r-[length:var(--border-width)] border-[var(--border-color)] px-2 py-1.5 text-[10px] font-bold transition-colors last:border-r-0 ${activeScript === tab
                             ? 'bg-[var(--bg-canvas)] text-[var(--accent-primary)]'
                             : 'bg-[var(--bg-input)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
-                        }`}
+                          }`}
                       >
                         <Code2 size={11} />
                         {tab}

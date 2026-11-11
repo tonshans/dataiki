@@ -9,7 +9,7 @@ import polars as pl
 from sqlalchemy import create_engine
 
 from backend.config import CACHE_DIR, UPLOADS_DIR
-from backend.engine.vault import get_connection
+from backend.engine.vault import get_connection, is_modifying_query
 
 
 def list_local_uploads() -> List[Dict[str, Any]]:
@@ -110,6 +110,12 @@ def _ingest_from_database(params: Dict[str, Any]) -> pl.DataFrame:
     conn_info = get_connection(conn_id_or_name)
     if not conn_info:
         raise KeyError(f"Vault connection '{conn_id_or_name}' not found.")
+
+    if conn_info.get("is_read_only", True) and is_modifying_query(sql_query):
+        raise PermissionError(
+            f"Vault connection '{conn_info.get('name', conn_id_or_name)}' is marked as Read-Only. "
+            "Only SELECT queries are permitted. To allow modifying queries, uncheck 'Read-Only' in Vault."
+        )
 
     connection_uri: str = conn_info["connection_uri"]
     batch_size: int = int(params.get("batch_size", 100_000))

@@ -94,6 +94,13 @@ class ConnectionCreate(BaseModel):
     conn_type: Literal["mssql", "oracle", "postgres", "mysql", "sqlite", "rest_api"]
     connection_uri: str
     headers: Dict[str, Any] = Field(default_factory=dict)
+    is_read_only: bool = True
+
+
+class ConnectionReadOnlyPatch(BaseModel):
+    """Payload to toggle read-only flag for a connection."""
+
+    is_read_only: bool
 
 
 class ConnectionTestRequest(BaseModel):
