@@ -964,6 +964,16 @@ const RECIPE_ACTIONS: Record<RecipeActionType, RecipeActionMeta> = {
           { value: 'jitter', label: 'Gaussian Jitter' },
         ],
       },
+      {
+        key: 'scope',
+        label: 'Cakupan Augmentasi (Execution Scope)',
+        kind: 'select',
+        defaultValue: 'output_and_preview',
+        options: [
+          { value: 'output_and_preview', label: 'Terapkan ke Data Preview & Output Node' },
+          { value: 'train_only', label: 'Hanya saat training ML' },
+        ],
+      },
       { key: 'target_column', label: 'Target Column (SMOTE)', placeholder: 'target' },
       { key: 'k_neighbors', label: 'SMOTE Neighbors', kind: 'number', defaultValue: '5' },
       { key: 'numeric_columns', label: 'Numeric Columns (jitter)', kind: 'list' },
@@ -1019,6 +1029,9 @@ function recipeStepToForm(step: RecipeStep): RecipeFormStep {
     else if (raw !== undefined && raw !== null) values[field.key] = String(raw);
   }
   if (!values.column && step.column) values.column = step.column;
+  if (step.action === 'augment_rows' && !values.scope) {
+    values.scope = step.train_only ? 'train_only' : 'output_and_preview';
+  }
 
   return {
     step_id: step.step_id,
@@ -1049,12 +1062,17 @@ function formStepToRecipe(step: RecipeFormStep): RecipeStep {
     }
   }
 
+  const isTrainOnly =
+    step.action === 'augment_rows'
+      ? step.values.scope === 'train_only'
+      : false;
+
   return {
     step_id: step.step_id,
     action: step.action,
     column: step.values.column?.trim() || undefined,
     params,
-    train_only: step.action === 'augment_rows',
+    train_only: isTrainOnly,
     description: step.description.trim() || RECIPE_ACTIONS[step.action].label,
   };
 }
@@ -1242,11 +1260,12 @@ function RecipeConfig({ node }: ConfigProps) {
         <div className="space-y-2.5">
           {steps.map((step, index) => {
             const meta = RECIPE_ACTIONS[step.action];
-            const trainOnly = step.action === 'augment_rows';
+            const isAugment = step.action === 'augment_rows';
+            const isTrainOnly = isAugment && step.values.scope === 'train_only';
             return (
               <div
                 key={step.step_id}
-                className={trainOnly ? 'hazard-stripes p-1.5 rounded-[var(--border-radius)]' : ''}
+                className={isTrainOnly ? 'hazard-stripes p-1.5 rounded-[var(--border-radius)]' : ''}
               >
                 <div className="border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] p-2.5 rounded-[var(--border-radius)]">
                   <div className="flex flex-wrap items-center gap-2">
@@ -1266,10 +1285,16 @@ function RecipeConfig({ node }: ConfigProps) {
                         </option>
                       ))}
                     </select>
-                    {trainOnly && (
-                      <span className="shrink-0 bg-[var(--accent-warning)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--text-main)] rounded-[var(--border-radius)]">
-                        🛠️ TRAIN-ONLY
-                      </span>
+                    {isAugment && (
+                      isTrainOnly ? (
+                        <span className="shrink-0 bg-[var(--accent-warning)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--text-main)] rounded-[var(--border-radius)]">
+                          🛠️ TRAIN-ONLY
+                        </span>
+                      ) : (
+                        <span className="shrink-0 bg-[var(--accent-primary)]/15 border border-[var(--accent-primary)]/30 px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent-primary)] rounded-[var(--border-radius)]">
+                          ✨ PREVIEW & OUTPUT
+                        </span>
+                      )
                     )}
                     <div className="ml-auto flex shrink-0 items-center gap-1">
                       <button

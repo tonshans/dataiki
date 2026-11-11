@@ -242,8 +242,13 @@ export function toBackendRecipeSteps(steps: RecipeStep[]): Array<Record<string, 
       ...step.params,
       ...(step.column && step.params?.column === undefined ? { column: step.column } : {}),
     },
-    // SMOTE / Gaussian Jitter must be skipped at inference time.
-    is_train_only: step.train_only || step.action === 'augment_rows',
+    // SMOTE / Gaussian Jitter: default applies to preview & output node (is_train_only: false)
+    // unless explicitly set to scope === 'train_only'
+    is_train_only:
+      step.action === 'augment_rows'
+        ? step.params?.scope === 'train_only' ||
+          (step.train_only && step.params?.scope !== 'output_and_preview')
+        : Boolean(step.train_only),
   }));
 }
 
@@ -258,12 +263,17 @@ export function fromBackendRecipeSteps(rawSteps: unknown): RecipeStep[] {
     const action = FRONTEND_ACTION_MAP[String(raw?.op_type)];
     const stepId = String(raw?.step_id ?? '');
     if (!action || !stepId) continue;
+    const isTrainOnly = Boolean(raw?.is_train_only);
+    const params = { ...(raw?.params ?? {}) };
+    if (action === 'augment_rows' && !params.scope) {
+      params.scope = isTrainOnly ? 'train_only' : 'output_and_preview';
+    }
     steps.push({
       step_id: stepId,
       action,
       column: raw?.params?.column,
-      params: raw?.params ?? {},
-      train_only: Boolean(raw?.is_train_only),
+      params,
+      train_only: isTrainOnly,
       description: String(raw?.label ?? action),
     });
   }

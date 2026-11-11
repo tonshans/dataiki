@@ -32,7 +32,7 @@ export interface RecipeStep {
   action: RecipeActionType;
   column?: string;
   params: Record<string, any>;
-  train_only: boolean; // Wajib true untuk 'augment_rows' (SMOTE / Gaussian Jitter)
+  train_only: boolean; // True jika cakupan augmentasi dibatasi 'Hanya saat training ML'
   description: string;
 }
 

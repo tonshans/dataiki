@@ -142,8 +142,10 @@ def _apply_smote(
     k_neighbors: int = 5,
 ) -> pl.DataFrame:
     """Perform k-NN synthetic minority oversampling (SMOTE) on tabular DataFrame."""
-    if target_column not in df.columns or df.height < 2:
+    matched_target = _resolve_column_name(df, target_column)
+    if not matched_target or df.height < 2:
         return df
+    target_column = matched_target
 
     # Find class distributions
     vc = df[target_column].value_counts()
@@ -770,26 +772,45 @@ def apply_recipe_steps(
                 if group_exprs:
                     current_df = current_df.with_columns(group_exprs)
 
-        # 15. row_augment_smote (TRAIN-ONLY)
+        # 15. row_augment_smote
         elif op == "row_augment_smote":
-            if include_train_only:
-                target_col = params.get("target_column")
-                k_nn = int(params.get("k_neighbors", 5))
-                if target_col:
-                    current_df = _apply_smote(current_df, target_col, k_neighbors=k_nn)
+            raw_target = params.get("target_column") or params.get("column")
+            target_col = _resolve_column_name(current_df, raw_target)
+            try:
+                raw_k = params.get("k_neighbors", 5)
+                k_nn = int(raw_k if raw_k is not None and str(raw_k).strip() else 5)
+            except (ValueError, TypeError):
+                k_nn = 5
+            if target_col:
+                current_df = _apply_smote(current_df, target_col, k_neighbors=k_nn)
 
-        # 16. row_augment_jitter (TRAIN-ONLY)
+        # 16. row_augment_jitter
         elif op == "row_augment_jitter":
-            if include_train_only:
-                num_cols = params.get("numeric_columns")
-                noise_scale = float(params.get("noise_scale", 0.05))
-                num_synth = params.get("num_synthetic_rows")
-                current_df = _apply_jitter(
-                    current_df,
-                    numeric_columns=num_cols,
-                    noise_scale=noise_scale,
-                    num_synthetic_rows=int(num_synth) if num_synth is not None else None,
+            raw_num_cols = params.get("numeric_columns")
+            num_cols = (
+                _resolve_column_names(current_df, raw_num_cols)
+                if raw_num_cols
+                else None
+            )
+            try:
+                noise_scale = float(params.get("noise_scale", 0.05) or 0.05)
+            except (ValueError, TypeError):
+                noise_scale = 0.05
+            num_synth = params.get("num_synthetic_rows")
+            try:
+                num_synth_int = (
+                    int(num_synth)
+                    if num_synth is not None and str(num_synth).strip()
+                    else None
                 )
+            except (ValueError, TypeError):
+                num_synth_int = None
+            current_df = _apply_jitter(
+                current_df,
+                numeric_columns=num_cols,
+                noise_scale=noise_scale,
+                num_synthetic_rows=num_synth_int,
+            )
 
         else:
             raise ValueError(f"Unknown recipe operation: '{op}'")

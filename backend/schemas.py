@@ -59,8 +59,14 @@ class RecipeStep(BaseModel):
             if "label" not in d or not d["label"]:
                 d["label"] = str(d.get("description") or d.get("label") or d.get("op_type") or "Step")
 
-            # 3. Fallback for is_train_only from train_only
-            if "is_train_only" not in d and "train_only" in d:
+            # 3. Fallback for is_train_only from params.scope or train_only
+            params = d.get("params") or {}
+            scope = params.get("scope") or params.get("apply_scope")
+            if scope == "train_only":
+                d["is_train_only"] = True
+            elif scope == "output_and_preview":
+                d["is_train_only"] = False
+            elif "is_train_only" not in d and "train_only" in d:
                 d["is_train_only"] = bool(d["train_only"])
 
             return d
