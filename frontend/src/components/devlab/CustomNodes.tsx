@@ -2,8 +2,10 @@ import {
   AlertTriangle,
   BrainCircuit,
   Combine,
+  Cpu,
   Database,
   GitFork,
+  HardDriveDownload,
   Layers,
   Loader2,
   Terminal,
@@ -25,6 +27,8 @@ const NODE_ICON: Record<UINodeKind, LucideIcon> = {
   joiner: Combine,
   python_script: Terminal,
   ml_studio: BrainCircuit,
+  prediction_model: Cpu,
+  data_output: HardDriveDownload,
 };
 
 const NODE_LABEL: Record<UINodeKind, string> = {
@@ -34,6 +38,8 @@ const NODE_LABEL: Record<UINodeKind, string> = {
   joiner: 'Joiner',
   python_script: 'Python Script',
   ml_studio: 'ML Studio',
+  prediction_model: 'Prediction Model',
+  data_output: 'Data Output',
 };
 
 function asText(value: unknown): string {
@@ -92,6 +98,24 @@ function describeNode(data: CanvasNodeData): string {
       return target
         ? `${predictionType} · target: ${target}`
         : `${predictionType}, target not selected`;
+    }
+    case 'prediction_model': {
+      const modelName = asText(params.model_name) || 'active model';
+      const version = params.model_version ? `v${params.model_version}` : 'latest';
+      const code = asText(params.post_calc_code);
+      const lines = code ? code.split('\n').length : 0;
+      return `${modelName} · ${version}${lines > 0 ? ` · post_calc ${lines} line${lines === 1 ? '' : 's'}` : ''}`;
+    }
+    case 'data_output': {
+      const sinkType = asText(params.sink_type) || 'file';
+      if (sinkType === 'db' || sinkType === 'db_table' || sinkType === 'database') {
+        const table = asText(params.table_name) || 'table not set';
+        const mode = asText(params.mode) || 'append';
+        return `DB · ${table} (${mode})`;
+      }
+      const dest = asText(params.dest_path) || 'path not set';
+      const fmt = asText(params.format) || 'parquet';
+      return `File · ${shorten(dest)} (${fmt})`;
     }
     default:
       return 'Pipeline node';
@@ -233,7 +257,7 @@ export function CustomNode({
           />
         </>
       ) : (
-        kind !== 'ml_studio' && (
+        !['ml_studio', 'data_output'].includes(kind) && (
           <Handle
             type="source"
             position={Position.Right}
@@ -254,4 +278,6 @@ export const nodeTypes: NodeTypes = {
   joiner: CustomNode,
   python_script: CustomNode,
   ml_studio: CustomNode,
+  prediction_model: CustomNode,
+  data_output: CustomNode,
 };

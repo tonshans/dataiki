@@ -33,6 +33,8 @@ const MAX_INPUTS: Record<UINodeKind, number> = {
   joiner: 2,
   python_script: 1,
   ml_studio: 1,
+  prediction_model: 1,
+  data_output: 1,
 };
 
 const MAX_OUTPUTS: Record<UINodeKind, number> = {
@@ -42,6 +44,8 @@ const MAX_OUTPUTS: Record<UINodeKind, number> = {
   joiner: 1,
   python_script: 1,
   ml_studio: 0,
+  prediction_model: 1,
+  data_output: 0,
 };
 
 const BACKEND_NODE_TYPE: Record<UINodeKind, BackendNodeType> = {
@@ -51,6 +55,8 @@ const BACKEND_NODE_TYPE: Record<UINodeKind, BackendNodeType> = {
   joiner: 'join',
   python_script: 'py_transform',
   ml_studio: 'ml_studio',
+  prediction_model: 'prediction',
+  data_output: 'data_output',
 };
 
 const UI_NODE_KINDS = new Set<UINodeKind>([
@@ -60,6 +66,8 @@ const UI_NODE_KINDS = new Set<UINodeKind>([
   'joiner',
   'python_script',
   'ml_studio',
+  'prediction_model',
+  'data_output',
 ]);
 
 function isUINodeKind(value: string): value is UINodeKind {

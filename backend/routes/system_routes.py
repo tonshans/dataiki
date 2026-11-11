@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
-from backend.config import UPLOADS_DIR
+from backend.config import ALLOW_FREESTYLE, UPLOADS_DIR
 from backend.database import get_db
 from backend.engine.ingestion import list_local_uploads
 from backend.engine.janitor import purge_storage_janitor, scan_storage_janitor
@@ -45,6 +45,12 @@ from backend.schemas import (
 )
 
 router = APIRouter(prefix="/api/system", tags=["System & Settings"])
+
+
+@router.get("/features")
+def get_feature_flags() -> Dict[str, bool]:
+    """Expose runtime feature flags so the UI can hide disabled features."""
+    return {"allow_freestyle": ALLOW_FREESTYLE}
 
 
 # =====================================================================

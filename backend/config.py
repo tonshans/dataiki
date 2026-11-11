@@ -1,5 +1,6 @@
 """Dataiki configuration and storage path management."""
 
+import os
 from pathlib import Path
 
 # Base Paths
@@ -16,6 +17,15 @@ EXPORTS_DIR: Path = STORAGE_DIR / "exports"
 # Database Path
 DB_PATH: Path = STORAGE_DIR / "registry.db"
 DATABASE_URL: str = f"sqlite:///{DB_PATH.as_posix()}"
+
+# Feature flag: free-form Python script editor (arbitrary server-side code).
+# Set DATAIKI_ALLOW_FREESTYLE=0 to hide the editor and reject its endpoints.
+ALLOW_FREESTYLE: bool = os.getenv("DATAIKI_ALLOW_FREESTYLE", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
 
 # Ensure directories exist
 ALL_STORAGE_DIRS = [

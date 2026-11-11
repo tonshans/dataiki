@@ -4,16 +4,20 @@ import {
   Package,
   Plug,
   Settings,
+  Terminal,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import * as api from '../../api/client';
 import { usePipelineStore } from '../../store/usePipelineStore';
 import { useUIStore } from '../../store/useUIStore';
 import type { ProductionNavSection } from '../../types/dataiki';
 import { ApiKeysSecurityTab } from './ApiKeysSecurityTab';
 import { CustomApiBuilderTab } from './CustomApiBuilderTab';
+import { FreestyleScriptLabTab } from './FreestyleScriptLabTab';
 import { JobScriptEditorTab } from './JobScriptEditorTab';
 import { ModelRegistryTab } from './ModelRegistryTab';
-import { SchedulerMasterDetailTab } from './SchedulerMasterDetailTab';
+import { SchedulerWorkspace } from './SchedulerWorkspace';
 
 interface ProductionSection {
   key: ProductionNavSection;
@@ -42,6 +46,12 @@ const PRODUCTION_SECTIONS: ProductionSection[] = [
     icon: Settings,
   },
   {
+    key: 'script_lab',
+    label: 'Freestyle Script Editor',
+    hint: 'Free-form Python, run & schedule',
+    icon: Terminal,
+  },
+  {
     key: 'scheduler',
     label: 'Scheduler & Logs',
     hint: 'Human-friendly schedules & history',
@@ -60,6 +70,7 @@ const SECTION_TABS: Record<ProductionNavSection, Array<{ key: string; label: str
   models: [{ key: 'registry', label: 'Model Registry' }],
   api_builder: [{ key: 'endpoints', label: 'REST API Endpoints' }],
   job_editor: [{ key: 'jobs', label: 'Batch Jobs' }],
+  script_lab: [{ key: 'scripts', label: 'Python Scripts' }],
   scheduler: [{ key: 'schedules', label: 'Schedules & Execution Logs' }],
   api_keys: [{ key: 'master-keys', label: 'Master API Keys' }],
 };
@@ -67,7 +78,7 @@ const SECTION_TABS: Record<ProductionNavSection, Array<{ key: string; label: str
 const CARD_CLASS =
   'border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] shadow-[var(--shadow-card)] rounded-[var(--border-radius)]';
 
-function sectionContent(section: ProductionNavSection) {
+function sectionContent(section: ProductionNavSection, allowFreestyle: boolean) {
   switch (section) {
     case 'models':
       return <ModelRegistryTab />;
@@ -75,8 +86,10 @@ function sectionContent(section: ProductionNavSection) {
       return <CustomApiBuilderTab />;
     case 'job_editor':
       return <JobScriptEditorTab />;
+    case 'script_lab':
+      return allowFreestyle ? <FreestyleScriptLabTab /> : null;
     case 'scheduler':
-      return <SchedulerMasterDetailTab />;
+      return <SchedulerWorkspace allowFreestyle={allowFreestyle} />;
     case 'api_keys':
       return <ApiKeysSecurityTab />;
     default:
@@ -88,10 +101,29 @@ export function ProductionGatewayView() {
   const prodNavSection = useUIStore((state) => state.prodNavSection);
   const setProdNavSection = useUIStore((state) => state.setProdNavSection);
   const activeProjectKey = usePipelineStore((state) => state.activeProjectKey);
+  const [allowFreestyle, setAllowFreestyle] = useState(true);
 
-  const activeSection =
-    PRODUCTION_SECTIONS.find((section) => section.key === prodNavSection) ??
-    PRODUCTION_SECTIONS[0];
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .fetchFeatureFlags()
+      .then((flags) => {
+        if (!cancelled) setAllowFreestyle(Boolean(flags.allow_freestyle));
+      })
+      .catch(() => {
+        // Keep the editor visible when the flag endpoint is unreachable (backend default is on).
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const sections = useMemo(
+    () => (allowFreestyle ? PRODUCTION_SECTIONS : PRODUCTION_SECTIONS.filter((s) => s.key !== 'script_lab')),
+    [allowFreestyle],
+  );
+
+  const activeSection = sections.find((section) => section.key === prodNavSection) ?? sections[0];
   const tabs = SECTION_TABS[activeSection.key];
 
   return (
@@ -110,7 +142,7 @@ export function ProductionGatewayView() {
           aria-label="Production Gateway sections"
           className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2"
         >
-          {PRODUCTION_SECTIONS.map((section) => {
+          {sections.map((section) => {
             const Icon = section.icon;
             const active = section.key === activeSection.key;
             return (
@@ -180,7 +212,7 @@ export function ProductionGatewayView() {
 
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {activeProjectKey ? (
-            sectionContent(activeSection.key)
+            sectionContent(activeSection.key, allowFreestyle)
           ) : (
             <div className={`${CARD_CLASS} mx-auto mt-6 max-w-lg px-5 py-8 text-center`}>
               <Package size={24} className="mx-auto text-[var(--text-muted)]" />

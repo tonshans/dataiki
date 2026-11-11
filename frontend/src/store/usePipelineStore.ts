@@ -20,6 +20,7 @@ import type {
   ConnectionItem,
   CustomEndpointConfig,
   EdgeConfig,
+  FreestyleScriptItem,
   JobExecutionLogEntry,
   MLSessionItem,
   NodeConfig,
@@ -52,6 +53,7 @@ export interface PromoteModelPayload {
   tuning_job_id: string;
   trial_number: number;
   activate_immediately?: boolean;
+  model_name?: string;
 }
 
 export interface CustomEndpointTestOptions {
@@ -72,6 +74,8 @@ const BACKEND_NODE_TYPE: Record<UINodeKind, BackendNodeType> = {
   joiner: 'join',
   python_script: 'py_transform',
   ml_studio: 'ml_studio',
+  prediction_model: 'prediction',
+  data_output: 'data_output',
 };
 
 const UI_NODE_KIND: Record<BackendNodeType, UINodeKind> = {
@@ -80,6 +84,8 @@ const UI_NODE_KIND: Record<BackendNodeType, UINodeKind> = {
   data_recipe: 'recipe',
   py_transform: 'python_script',
   ml_studio: 'ml_studio',
+  prediction: 'prediction_model',
+  data_output: 'data_output',
 };
 
 const NODE_LABELS: Record<UINodeKind, string> = {
@@ -89,6 +95,8 @@ const NODE_LABELS: Record<UINodeKind, string> = {
   joiner: 'Joiner',
   python_script: 'Python Script',
   ml_studio: 'ML Studio',
+  prediction_model: 'Prediction Model',
+  data_output: 'Data Output',
 };
 
 const MAX_INPUTS: Record<UINodeKind, number> = {
@@ -98,6 +106,8 @@ const MAX_INPUTS: Record<UINodeKind, number> = {
   joiner: 2,
   python_script: 1,
   ml_studio: 1,
+  prediction_model: 1,
+  data_output: 1,
 };
 
 const MAX_OUTPUTS: Record<UINodeKind, number> = {
@@ -107,6 +117,8 @@ const MAX_OUTPUTS: Record<UINodeKind, number> = {
   joiner: 1,
   python_script: 1,
   ml_studio: 0,
+  prediction_model: 1,
+  data_output: 0,
 };
 
 let idSequence = 0;
@@ -329,6 +341,7 @@ interface PipelineState {
   publishedModels: PublishedModelItem[];
   customEndpoints: CustomEndpointConfig[];
   productionJobs: ProductionJobItem[];
+  freestyleScripts: FreestyleScriptItem[];
   jobExecutionLogs: Record<string, JobExecutionLogEntry[]>;
   apiKeys: ApiKeyItem[];
 
@@ -390,6 +403,16 @@ interface PipelineState {
   deleteProductionJob: (jobScriptId: string) => Promise<void>;
   runProductionJobNow: (jobScriptId: string) => Promise<api.JobRunResult>;
 
+  loadFreestyleScripts: (projectKey?: string) => Promise<FreestyleScriptItem[]>;
+  saveFreestyleScript: (script: FreestyleScriptItem) => Promise<FreestyleScriptItem>;
+  deleteFreestyleScript: (scriptId: string) => Promise<void>;
+  runFreestyleScriptNow: (scriptId: string) => Promise<api.FreestyleRunResult>;
+  runFreestyleCode: (code: string) => Promise<api.FreestyleRunResult>;
+  updateFreestyleSchedule: (
+    scriptId: string,
+    schedule: FreestyleScriptItem['schedule_config'],
+  ) => Promise<void>;
+
   addJobExecutionLog: (entry: JobExecutionLogEntry) => void;
   updateJobExecutionLog: (
     jobScriptId: string,
@@ -420,6 +443,7 @@ export const usePipelineStore = create<PipelineState>()(
       publishedModels: [],
       customEndpoints: [],
       productionJobs: [],
+      freestyleScripts: [],
       jobExecutionLogs: {},
       apiKeys: [],
 
@@ -1372,6 +1396,81 @@ export const usePipelineStore = create<PipelineState>()(
           get().addProcessLog('ERROR', `Job '${scheduleName}' failed: ${detail}`);
           throw error;
         }
+      },
+
+      loadFreestyleScripts: async (projectKey) => {
+        const key = projectKey ?? get().activeProjectKey;
+        if (!key) return [];
+        try {
+          const scripts = await api.fetchFreestyleScripts(key);
+          set({ freestyleScripts: scripts });
+          return scripts;
+        } catch (error) {
+          get().addProcessLog('ERROR', `Failed to load scripts: ${errorMessage(error)}`);
+          throw error;
+        }
+      },
+
+      saveFreestyleScript: async (script) => {
+        const projectKey = script.project_key || get().activeProjectKey;
+        if (!projectKey) throw new Error('No active project selected.');
+        if (!script.script_name.trim()) throw new Error('Script name is required.');
+        const saved = await api.saveFreestyleScript({ ...script, project_key: projectKey });
+        set((state) => ({
+          freestyleScripts: [
+            saved,
+            ...state.freestyleScripts.filter((item) => item.script_id !== saved.script_id),
+          ],
+        }));
+        get().addProcessLog('INFO', `Script '${saved.script_name}' saved.`);
+        return saved;
+      },
+
+      deleteFreestyleScript: async (scriptId) => {
+        if (!scriptId) throw new Error('Script id is required.');
+        await api.deleteFreestyleScript(scriptId);
+        set((state) => ({
+          freestyleScripts: state.freestyleScripts.filter((item) => item.script_id !== scriptId),
+        }));
+        get().addProcessLog('INFO', `Script '${scriptId}' deleted.`);
+      },
+
+      runFreestyleScriptNow: async (scriptId) => {
+        if (!scriptId) throw new Error('Script id is required.');
+        const result = await api.runFreestyleScriptNow(scriptId);
+        set((state) => ({
+          freestyleScripts: state.freestyleScripts.map((item) =>
+            item.script_id === scriptId
+              ? {
+                ...item,
+                last_status: result.status === 'success' ? 'success' : 'failed',
+                last_run_at: result.executed_at,
+                last_output: result.stdout,
+                last_error: result.error,
+              }
+              : item,
+          ),
+        }));
+        if (result.status !== 'success') {
+          get().addProcessLog('ERROR', `Script run failed: ${result.error.split('\n').pop()}`);
+        }
+        return result;
+      },
+
+      runFreestyleCode: async (code) => {
+        const projectKey = get().activeProjectKey;
+        if (!projectKey) throw new Error('No active project selected.');
+        return api.runFreestyleCode(projectKey, code);
+      },
+
+      updateFreestyleSchedule: async (scriptId, schedule) => {
+        await api.updateFreestyleSchedule(scriptId, schedule);
+        set((state) => ({
+          freestyleScripts: state.freestyleScripts.map((item) =>
+            item.script_id === scriptId ? { ...item, schedule_config: schedule } : item,
+          ),
+        }));
+        get().addProcessLog('INFO', `Schedule updated for script '${scriptId}'.`);
       },
 
       addJobExecutionLog: (entry) => {

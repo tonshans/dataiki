@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS ml_jobs (
 CREATE TABLE IF NOT EXISTS model_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_key TEXT NOT NULL,
+    model_name TEXT DEFAULT '',
     version INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'staged',
     task_type TEXT NOT NULL,
@@ -108,6 +109,19 @@ CREATE TABLE IF NOT EXISTS batch_jobs (
     last_error TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS freestyle_scripts (
+    script_id TEXT PRIMARY KEY,
+    project_key TEXT NOT NULL,
+    script_name TEXT NOT NULL,
+    code TEXT NOT NULL DEFAULT '',
+    schedule_config_json TEXT DEFAULT '{}',
+    last_run_at TIMESTAMP,
+    last_status TEXT DEFAULT 'never_run',
+    last_error TEXT DEFAULT '',
+    last_output TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -138,6 +152,16 @@ def init_db() -> None:
         cols = {row["name"] for row in cursor.fetchall()}
         if "is_read_only" not in cols:
             conn.execute("ALTER TABLE connections ADD COLUMN is_read_only INTEGER DEFAULT 1")
+
+        # Auto-migration for model_versions.model_name (name used by freestyle scripts)
+        cursor = conn.execute("PRAGMA table_info(model_versions)")
+        model_cols = {row["name"] for row in cursor.fetchall()}
+        if "model_name" not in model_cols:
+            conn.execute("ALTER TABLE model_versions ADD COLUMN model_name TEXT DEFAULT ''")
+        conn.execute(
+            "UPDATE model_versions SET model_name = project_key "
+            "WHERE model_name IS NULL OR model_name = ''"
+        )
 
 
 # Initialize database schema on load

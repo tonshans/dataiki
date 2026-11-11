@@ -8,12 +8,14 @@ import {
   ChevronDown,
   ChevronUp,
   Combine,
+  Cpu,
   Database,
   Eye,
   FileText,
   FolderOpen,
   GitFork,
   Globe,
+  HardDriveDownload,
   Layers,
   Loader2,
   Play,
@@ -168,6 +170,7 @@ async function executeAndPreview(
       state.activeProjectKey,
       nodeId,
       splitBranch ? { nodeId, branch: splitBranch } : null,
+      false, // previews never trigger Data Output sink writes
     );
     await usePipelineStore.getState().fetchNodePreview(nodeId);
   } finally {
@@ -2029,6 +2032,504 @@ function PythonScriptConfig({ node }: ConfigProps) {
 }
 
 /* =====================================================================
+   Prediction Model Node
+   ===================================================================== */
+
+const POST_CALC_TEMPLATE = `import polars as pl
+
+def post_calc(pred_df: pl.DataFrame, raw_df: pl.DataFrame, dataiki) -> pl.DataFrame:
+    return pred_df   # upstream data + prediction_<target> (+ probability_<target>)
+`;
+
+function PredictionModelConfig({ node }: ConfigProps) {
+  const params = node.data.params ?? {};
+  const addToast = useUIStore((state) => state.addToast);
+  const close = useUIStore((state) => state.setActiveConfigNodeId);
+  const deleteNode = usePipelineStore((state) => state.deleteNode);
+  const projectKey = usePipelineStore((state) => state.activeProjectKey);
+  const publishedModels = usePipelineStore((state) => state.publishedModels);
+  const loadPublishedModels = usePipelineStore((state) => state.loadPublishedModels);
+  const activeTheme = useUIStore((state) => state.activeTheme);
+
+  const projectModels = useMemo(
+    () => publishedModels.filter((model) => model.project_key === projectKey),
+    [publishedModels, projectKey],
+  );
+
+  const modelNames = useMemo(
+    () => Array.from(new Set(projectModels.map((model) => model.model_name))).sort(),
+    [projectModels],
+  );
+
+  const [modelName, setModelName] = useState(() => asText(params.model_name) || modelNames[0] || '');
+  const [modelVersion, setModelVersion] = useState(() =>
+    params.model_version ? String(params.model_version) : '',
+  );
+  const [code, setCode] = useState(() => asText(params.post_calc_code) || POST_CALC_TEMPLATE);
+  const [isRunning, setIsRunning] = useState(false);
+
+  useEffect(() => {
+    if (!projectKey) return;
+    void loadPublishedModels(projectKey).catch(() => {
+      // Models are optional metadata; the backend still resolves the active version.
+    });
+  }, [loadPublishedModels, projectKey]);
+
+  useEffect(() => {
+    if (!modelName && modelNames.length > 0) setModelName(modelNames[0]);
+  }, [modelName, modelNames]);
+
+  const versions = useMemo(
+    () =>
+      projectModels
+        .filter((model) => model.model_name === modelName)
+        .sort((a, b) => b.version - a.version),
+    [modelName, projectModels],
+  );
+
+  const activeVersion = versions.find((model) => model.status === 'active')?.version;
+
+  const buildParams = () => ({
+    ...params,
+    model_name: modelName,
+    model_version: modelVersion ? Number(modelVersion) : null,
+    post_calc_code: code,
+  });
+
+  const handleDelete = async () => {
+    try {
+      await deleteNode(node.id);
+      addToast('info', `${node.data.label} deleted.`);
+      close(null);
+    } catch (error) {
+      addToast('error', `Failed to delete node: ${messageOf(error)}`);
+    }
+  };
+
+  const handleSave = async () => {
+    try {
+      persistNode(node.id, { params: buildParams() });
+      await syncDagToBackend();
+      addToast('success', 'Prediction Model saved.');
+      close(null);
+    } catch (error) {
+      addToast('error', `Failed to save prediction node: ${messageOf(error)}`);
+    }
+  };
+
+  const handlePreview = async () => {
+    setIsRunning(true);
+    try {
+      await executeAndPreview(node.id, { params: buildParams() });
+      addToast('success', 'Prediction preview loaded in the table drawer.');
+      close(null);
+    } catch (error) {
+      addToast('error', `Prediction preview failed: ${messageOf(error)}`);
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  return (
+    <ConfigModal
+      icon={Cpu}
+      node={node}
+      subtitle="Score upstream data with a published model, then reshape the result with an optional post_calc script."
+      footer={
+        <>
+          <button type="button" onClick={() => void handlePreview()} disabled={isRunning} className={PRIMARY_BUTTON}>
+            {isRunning ? <Loader2 size={13} className="animate-spin" /> : <Eye size={13} />}
+            Preview Data
+          </button>
+          <button type="button" onClick={() => close(null)} disabled={isRunning} className={SECONDARY_BUTTON}>
+            Cancel
+          </button>
+          <button type="button" onClick={() => void handleDelete()} disabled={isRunning} className={DANGER_BUTTON}>
+            <Trash2 size={13} />
+            Delete Node
+          </button>
+          <button type="button" onClick={() => void handleSave()} disabled={isRunning} className={PRIMARY_BUTTON}>
+            <Save size={13} />
+            Save Node
+          </button>
+        </>
+      }
+    >
+      <div className="mb-3 grid gap-2 md:grid-cols-2">
+        <div>
+          <label className={LABEL_CLASS}>Published model</label>
+          <select
+            value={modelName}
+            onChange={(event) => {
+              setModelName(event.target.value);
+              setModelVersion('');
+            }}
+            className={INPUT_CLASS}
+          >
+            {modelNames.length === 0 ? (
+              <option value="">No published models in this project</option>
+            ) : (
+              modelNames.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
+        <div>
+          <label className={LABEL_CLASS}>Version</label>
+          <select
+            value={modelVersion}
+            onChange={(event) => setModelVersion(event.target.value)}
+            className={INPUT_CLASS}
+            disabled={versions.length === 0}
+          >
+            <option value="">
+              Active{activeVersion ? ` (v${activeVersion})` : ''} — latest available
+            </option>
+            {versions.map((model) => (
+              <option key={model.model_id} value={String(model.version)}>
+                v{model.version} · {model.status}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {modelNames.length === 0 && (
+        <div className="mb-3 flex items-start gap-2 border-[length:var(--border-width)] border-[var(--accent-warning,#d97706)] bg-[var(--bg-card)] px-3 py-2 rounded-[var(--border-radius)]">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-[var(--accent-warning,#d97706)]" />
+          <p className="text-[11px] leading-relaxed text-[var(--text-main)]">
+            No published model found for this project. Promote a model in ML Studio → Production
+            first, otherwise this node fails on run.
+          </p>
+        </div>
+      )}
+
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-canvas)] px-3 py-2 rounded-[var(--border-radius)]">
+        <div className="flex min-w-0 items-center gap-2">
+          <Cpu size={14} className="shrink-0 text-[var(--accent-primary)]" />
+          <span className="truncate font-mono text-[11px] text-[var(--text-main)]">
+            def post_calc(pred_df, raw_df, dataiki) -&gt; pl.DataFrame
+          </span>
+        </div>
+        <span className={HINT_CLASS}>Output node = exactly what post_calc returns</span>
+      </div>
+
+      <div className="h-[380px] overflow-hidden border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-input)] rounded-[var(--border-radius)]">
+        <Editor
+          height="100%"
+          language="python"
+          value={code}
+          onChange={(value) => setCode(value ?? '')}
+          theme={activeTheme === 'midnight' ? 'vs-dark' : 'light'}
+          loading={
+            <div className="flex h-full items-center justify-center gap-2 text-xs text-[var(--text-muted)]">
+              <Loader2 size={14} className="animate-spin" />
+              Loading Python editor…
+            </div>
+          }
+          options={{
+            minimap: { enabled: false },
+            fontSize: 12,
+            scrollBeyondLastLine: false,
+            wordWrap: 'on',
+            automaticLayout: true,
+            tabSize: 4,
+          }}
+        />
+      </div>
+      <p className={`${HINT_CLASS} mt-2`}>
+        <span className="font-mono">dataiki</span> is injected for model helpers and vault access.
+        Downstream nodes receive the DataFrame you return.
+      </p>
+    </ConfigModal>
+  );
+}
+
+/* =====================================================================
+   Data Output Node
+   ===================================================================== */
+
+type OutputSinkType = 'file' | 'db';
+
+function DataOutputConfig({ node }: ConfigProps) {
+  const params = node.data.params ?? {};
+  const addToast = useUIStore((state) => state.addToast);
+  const close = useUIStore((state) => state.setActiveConfigNodeId);
+  const deleteNode = usePipelineStore((state) => state.deleteNode);
+  const projectKey = usePipelineStore((state) => state.activeProjectKey);
+  const connections = usePipelineStore((state) => state.connections);
+
+  const initialSink = asText(params.sink_type).toLowerCase();
+  const [sinkType, setSinkType] = useState<OutputSinkType>(
+    initialSink === 'db' || initialSink === 'db_table' || initialSink === 'database' ? 'db' : 'file',
+  );
+  const [connId, setConnId] = useState(() => asText(params.conn_id));
+  const [tableName, setTableName] = useState(() => asText(params.table_name));
+  const [mode, setMode] = useState<'append' | 'replace'>(
+    asText(params.mode).toLowerCase() === 'replace' ? 'replace' : 'append',
+  );
+  const [format, setFormat] = useState(() => asText(params.format) || 'parquet');
+  const [destPath, setDestPath] = useState(() => asText(params.dest_path));
+  const [isTesting, setIsTesting] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+
+  const dbConnections = useMemo(
+    () => connections.filter((connection) => connection.conn_type !== 'rest_api'),
+    [connections],
+  );
+  const selectedConnection = dbConnections.find((connection) => connection.conn_id === connId);
+  const isReadOnly = Boolean(selectedConnection?.is_read_only);
+
+  const buildParams = () => ({
+    ...params,
+    sink_type: sinkType,
+    conn_id: sinkType === 'db' ? connId : null,
+    table_name: sinkType === 'db' ? tableName : null,
+    mode,
+    format,
+    dest_path: sinkType === 'file' ? destPath : null,
+  });
+
+  const validate = (): boolean => {
+    if (sinkType === 'db') {
+      if (!connId) {
+        addToast('warning', 'Select a destination connection.');
+        return false;
+      }
+      if (isReadOnly) {
+        addToast(
+          'warning',
+          'This connection is Read-Only. Uncheck Read-Only in the Vault before writing.',
+        );
+        return false;
+      }
+      if (!tableName.trim()) {
+        addToast('warning', 'Table name is required for a database sink.');
+        return false;
+      }
+    } else if (!destPath.trim()) {
+      addToast('warning', 'Output file path is required for a file sink.');
+      return false;
+    }
+    return true;
+  };
+
+  const handleDelete = async () => {
+    try {
+      await deleteNode(node.id);
+      addToast('info', `${node.data.label} deleted.`);
+      close(null);
+    } catch (error) {
+      addToast('error', `Failed to delete node: ${messageOf(error)}`);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!validate()) return;
+    try {
+      persistNode(node.id, { params: buildParams() });
+      await syncDagToBackend();
+      addToast('success', 'Data Output saved.');
+      close(null);
+    } catch (error) {
+      addToast('error', `Failed to save output node: ${messageOf(error)}`);
+    }
+  };
+
+  const handleTestWrite = async () => {
+    if (!projectKey || !validate()) return;
+    setIsTesting(true);
+    try {
+      persistNode(node.id, { params: buildParams() });
+      await syncDagToBackend();
+      const result = await api.runNodeSink(projectKey, node.id);
+      addToast('success', `Wrote ${result.rows} rows → ${result.target}`);
+    } catch (error) {
+      addToast('error', `Test Write failed: ${messageOf(error)}`);
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
+  const handlePreview = async () => {
+    setIsPreviewing(true);
+    try {
+      await executeAndPreview(node.id, { params: buildParams() });
+      addToast('success', 'Output preview loaded (no sink write).');
+      close(null);
+    } catch (error) {
+      addToast('error', `Preview failed: ${messageOf(error)}`);
+    } finally {
+      setIsPreviewing(false);
+    }
+  };
+
+  const busy = isTesting || isPreviewing;
+
+  return (
+    <ConfigModal
+      icon={HardDriveDownload}
+      node={node}
+      subtitle="Target sink for this branch: write once to a database table or a local file."
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={() => void handleTestWrite()}
+            disabled={busy || (sinkType === 'db' && isReadOnly)}
+            className={SECONDARY_BUTTON}
+            title={
+              sinkType === 'db' && isReadOnly
+                ? 'Connection is Read-Only'
+                : 'Write the cached data to the sink now'
+            }
+          >
+            {isTesting ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}
+            Test Write
+          </button>
+          <button type="button" onClick={() => void handlePreview()} disabled={busy} className={PRIMARY_BUTTON}>
+            {isPreviewing ? <Loader2 size={13} className="animate-spin" /> : <Eye size={13} />}
+            Preview Data
+          </button>
+          <button type="button" onClick={() => close(null)} disabled={busy} className={SECONDARY_BUTTON}>
+            Cancel
+          </button>
+          <button type="button" onClick={() => void handleDelete()} disabled={busy} className={DANGER_BUTTON}>
+            <Trash2 size={13} />
+            Delete Node
+          </button>
+          <button type="button" onClick={() => void handleSave()} disabled={busy} className={PRIMARY_BUTTON}>
+            <Save size={13} />
+            Save Node
+          </button>
+        </>
+      }
+    >
+      <div className="mb-3 grid grid-cols-2 gap-2">
+        {([
+          { value: 'file', label: 'Local File', icon: FileText },
+          { value: 'db', label: 'Database Table', icon: Database },
+        ] as const).map((option) => {
+          const Icon = option.icon;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => setSinkType(option.value)}
+              aria-pressed={sinkType === option.value}
+              className={`flex items-center gap-2 border-[length:var(--border-width)] p-2.5 text-left text-xs font-bold rounded-[var(--border-radius)] ${
+                sinkType === option.value
+                  ? 'border-[var(--accent-primary)] bg-[var(--bg-hover)] text-[var(--text-main)]'
+                  : 'border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
+              }`}
+            >
+              <Icon size={14} className="shrink-0 text-[var(--accent-primary)]" />
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {sinkType === 'db' ? (
+        <div className="space-y-3">
+          <div className="grid gap-2 md:grid-cols-2">
+            <div>
+              <label className={LABEL_CLASS}>Connection</label>
+              <select
+                value={connId}
+                onChange={(event) => setConnId(event.target.value)}
+                className={INPUT_CLASS}
+              >
+                <option value="">Select saved connection…</option>
+                {dbConnections.map((connection) => (
+                  <option key={connection.conn_id} value={connection.conn_id}>
+                    {connection.name} ({connection.conn_type})
+                    {connection.is_read_only ? ' · read-only' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={LABEL_CLASS}>Table name</label>
+              <input
+                value={tableName}
+                onChange={(event) => setTableName(event.target.value)}
+                className={`${INPUT_CLASS} font-mono`}
+                placeholder="target_table"
+              />
+            </div>
+            <div>
+              <label className={LABEL_CLASS}>Write mode</label>
+              <select
+                value={mode}
+                onChange={(event) => setMode(event.target.value === 'replace' ? 'replace' : 'append')}
+                className={INPUT_CLASS}
+              >
+                <option value="append">Append rows</option>
+                <option value="replace">Replace table</option>
+              </select>
+            </div>
+          </div>
+
+          {isReadOnly && (
+            <div className="flex items-start gap-2 border-[length:var(--border-width)] border-[var(--accent-danger)] bg-[var(--bg-card)] px-3 py-2 rounded-[var(--border-radius)]">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0 text-[var(--accent-danger)]" />
+              <div className="text-[11px] leading-relaxed text-[var(--text-main)]">
+                <p className="font-bold">Connection tidak bisa dipakai untuk output (Read-Only).</p>
+                <p>
+                  Buat atau edit koneksi ini di Vault, lalu hilangkan centang <em>Read-Only</em>.
+                  Test Write dan Run Pipeline akan gagal selama koneksi masih read-only.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <p className={HINT_CLASS}>
+            <Server size={10} className="mr-1 inline" />
+            Preview tidak menulis ke database. Gunakan <strong>Test Write</strong> atau Run
+            Pipeline untuk menulis.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="grid gap-2 md:grid-cols-2">
+            <div>
+              <label className={LABEL_CLASS}>Format</label>
+              <select
+                value={format}
+                onChange={(event) => setFormat(event.target.value)}
+                className={INPUT_CLASS}
+              >
+                <option value="parquet">Parquet</option>
+                <option value="csv">CSV</option>
+                <option value="xlsx">Excel (xlsx)</option>
+              </select>
+            </div>
+            <div>
+              <label className={LABEL_CLASS}>Output path</label>
+              <input
+                value={destPath}
+                onChange={(event) => setDestPath(event.target.value)}
+                className={`${INPUT_CLASS} font-mono`}
+                placeholder={`storage/exports/${node.id}.${format}`}
+              />
+            </div>
+          </div>
+          <p className={HINT_CLASS}>
+            <FolderOpen size={10} className="mr-1 inline" />
+            Relative paths resolve from the backend working directory. Parent folders are created
+            automatically.
+          </p>
+        </div>
+      )}
+    </ConfigModal>
+  );
+}
+
+/* =====================================================================
    Dispatcher
    ===================================================================== */
 
@@ -2051,6 +2552,10 @@ export function NodeConfigModals() {
       return <JoinerConfig key={node.id} node={node} />;
     case 'python_script':
       return <PythonScriptConfig key={node.id} node={node} />;
+    case 'prediction_model':
+      return <PredictionModelConfig key={node.id} node={node} />;
+    case 'data_output':
+      return <DataOutputConfig key={node.id} node={node} />;
     default:
       return null;
   }

@@ -3,8 +3,10 @@ import type { DragEvent } from 'react';
 import {
   BrainCircuit,
   Combine,
+  Cpu,
   Database,
   GitFork,
+  HardDriveDownload,
   Layers,
   PanelLeftClose,
   PanelLeftOpen,
@@ -61,6 +63,18 @@ const PALETTE_ITEMS: PaletteItem[] = [
     label: 'ML Studio',
     description: 'Screen, tune, and publish machine learning models.',
     icon: BrainCircuit,
+  },
+  {
+    kind: 'prediction_model',
+    label: 'Prediction Model',
+    description: 'Score upstream data with a published model + post-calc script.',
+    icon: Cpu,
+  },
+  {
+    kind: 'data_output',
+    label: 'Data Output',
+    description: 'Write pipeline results to a database table or local file.',
+    icon: HardDriveDownload,
   },
 ];
 

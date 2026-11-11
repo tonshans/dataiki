@@ -28,11 +28,13 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import create_engine, text
 
-from backend.config import UPLOADS_DIR
+from backend.config import ALLOW_FREESTYLE, UPLOADS_DIR
 from backend.database import get_db
 from backend.engine.ingestion import _ingest_from_file, _ingest_from_rest_api
 from backend.engine.runtime_sdk import DataikiRuntimeSDK
-from backend.engine.vault import get_connection, get_connection_wrapper
+from backend.engine.script_runner import run_freestyle_script
+from backend.engine.sink_writer import write_dataframe_to_db_sink
+from backend.engine.vault import get_connection_wrapper
 
 logger = logging.getLogger("dataiki.scheduler")
 
@@ -46,45 +48,8 @@ def _write_dataframe_to_db_sink(
     table_name: str,
     mode: str = "append",
 ) -> None:
-    """Insert DataFrame records into destination database table without using Pandas."""
-    conn_info = get_connection(conn_id)
-    if not conn_info:
-        raise KeyError(f"Destination connection '{conn_id}' not found in vault.")
-
-    if conn_info.get("is_read_only", True):
-        raise PermissionError(
-            f"Cannot write data: Destination connection '{conn_info.get('name', conn_id)}' is configured as Read-Only. "
-            "Please uncheck 'Read-Only' on this saved connection in the Vault to allow database sink operations."
-        )
-
-    engine = create_engine(conn_info["connection_uri"])
-    records = df.to_dicts()
-    if not records:
-        return
-
-    cols = df.columns
-    col_str = ", ".join([f'"{c}"' for c in cols])
-    param_str = ", ".join([f":{c}" for c in cols])
-
-    with engine.begin() as conn:
-        if mode.lower() == "replace":
-            conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
-            # Create table schema dynamically
-            type_map = {
-                pl.Int64: "BIGINT",
-                pl.Int32: "INTEGER",
-                pl.Float64: "FLOAT",
-                pl.Float32: "FLOAT",
-                pl.Boolean: "BOOLEAN",
-                pl.Utf8: "TEXT",
-                pl.Date: "DATE",
-                pl.Datetime: "TIMESTAMP",
-            }
-            col_defs = [f'"{c}" {type_map.get(df[c].dtype, "TEXT")}' for c in cols]
-            conn.execute(text(f'CREATE TABLE "{table_name}" ({", ".join(col_defs)})'))
-
-        insert_stmt = text(f'INSERT INTO "{table_name}" ({col_str}) VALUES ({param_str})')
-        conn.execute(insert_stmt, records)
+    """Backward-compatible wrapper around the shared sink writer."""
+    write_dataframe_to_db_sink(df, conn_id, table_name, mode=mode)
 
 
 def run_batch_job(batch_job_id: str) -> Dict[str, Any]:
@@ -274,8 +239,33 @@ def run_batch_job(batch_job_id: str) -> Dict[str, Any]:
         raise exc
 
 
+def _trigger_from_config(cfg: Dict[str, Any]) -> Optional[Any]:
+    """Translate a human-friendly schedule config into an APScheduler trigger."""
+    enabled = cfg.get("enabled", False)
+    mode = cfg.get("mode", "none")
+    val = cfg.get("value", "")
+
+    if not enabled or mode == "none":
+        return None
+
+    if mode == "every_minute":
+        return IntervalTrigger(minutes=1)
+    if mode == "every_hour":
+        return IntervalTrigger(hours=1)
+    if mode == "daily_at" and ":" in val:
+        parts = val.split(":")
+        return CronTrigger(hour=int(parts[0]), minute=int(parts[1]))
+    if mode == "specific_date" and val:
+        try:
+            run_dt = datetime.datetime.strptime(val, "%Y-%m-%d %H:%M")
+            return DateTrigger(run_date=run_dt)
+        except Exception:
+            return None
+    return None
+
+
 def sync_apscheduler_jobs() -> None:
-    """Sync registered batch job schedules to the running APScheduler instance.
+    """Sync registered batch jobs and freestyle scripts to APScheduler.
 
     Translates human-friendly modes:
     - 'every_minute' -> IntervalTrigger(minutes=1)
@@ -286,42 +276,18 @@ def sync_apscheduler_jobs() -> None:
     with get_db() as conn:
         rows = conn.execute("SELECT batch_job_id, schedule_config_json FROM batch_jobs").fetchall()
 
-    current_scheduled_ids = {job.id for job in scheduler.get_jobs()}
+    expected_ids: set[str] = set()
 
     for row in rows:
         jid = row["batch_job_id"]
-        cfg_str = row["schedule_config_json"] or "{}"
         try:
-            cfg = json.loads(cfg_str)
+            cfg = json.loads(row["schedule_config_json"] or "{}")
         except Exception:
             cfg = {}
 
-        enabled = cfg.get("enabled", False)
-        mode = cfg.get("mode", "none")
-        val = cfg.get("value", "")
-
-        if not enabled or mode == "none":
-            if jid in current_scheduled_ids:
-                scheduler.remove_job(jid)
-            continue
-
-        trigger = None
-        if mode == "every_minute":
-            trigger = IntervalTrigger(minutes=1)
-        elif mode == "every_hour":
-            trigger = IntervalTrigger(hours=1)
-        elif mode == "daily_at" and ":" in val:
-            parts = val.split(":")
-            h, m = int(parts[0]), int(parts[1])
-            trigger = CronTrigger(hour=h, minute=m)
-        elif mode == "specific_date" and val:
-            try:
-                run_dt = datetime.datetime.strptime(val, "%Y-%m-%d %H:%M")
-                trigger = DateTrigger(run_date=run_dt)
-            except Exception:
-                trigger = None
-
+        trigger = _trigger_from_config(cfg)
         if trigger:
+            expected_ids.add(jid)
             scheduler.add_job(
                 run_batch_job,
                 trigger=trigger,
@@ -329,8 +295,35 @@ def sync_apscheduler_jobs() -> None:
                 replace_existing=True,
                 args=[jid],
             )
-        elif jid in current_scheduled_ids:
-            scheduler.remove_job(jid)
+
+    # Script Lab schedules live in the same scheduler; ids are 'fs_...' so they never clash.
+    if ALLOW_FREESTYLE:
+        with get_db() as conn:
+            script_rows = conn.execute(
+                "SELECT script_id, schedule_config_json FROM freestyle_scripts"
+            ).fetchall()
+
+        for row in script_rows:
+            sid = row["script_id"]
+            try:
+                cfg = json.loads(row["schedule_config_json"] or "{}")
+            except Exception:
+                cfg = {}
+
+            trigger = _trigger_from_config(cfg)
+            if trigger:
+                expected_ids.add(sid)
+                scheduler.add_job(
+                    run_freestyle_script,
+                    trigger=trigger,
+                    id=sid,
+                    replace_existing=True,
+                    args=[sid],
+                )
+
+    for job in scheduler.get_jobs():
+        if job.id not in expected_ids:
+            scheduler.remove_job(job.id)
 
 
 def start_scheduler() -> None:

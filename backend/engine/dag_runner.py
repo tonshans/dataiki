@@ -23,6 +23,12 @@ from backend.config import CACHE_DIR
 from backend.database import get_db
 from backend.engine.ingestion import ingest_to_parquet
 from backend.engine.recipe_engine import apply_recipe_steps
+from backend.engine.runtime_sdk import DataikiRuntimeSDK
+from backend.engine.sink_writer import (
+    get_writable_connection,
+    write_dataframe_to_db_sink,
+    write_dataframe_to_file_sink,
+)
 from backend.schemas import EdgeConfig, NodeConfig, PipelineDAG, RecipeStep
 
 
@@ -301,10 +307,133 @@ def _execute_py_transform_node(
     return dest_path.as_posix()
 
 
+def _read_upstream_df(project_key: str, node: NodeConfig, dag: PipelineDAG) -> pl.DataFrame:
+    """Load the first parent node's Parquet cache for the given node."""
+    incoming_edges = [e for e in dag.edges if e.target == node.node_id]
+    if not incoming_edges:
+        raise ValueError(f"Node '{node.node_id}' has no incoming edge.")
+    parent_path = CACHE_DIR / project_key / f"{incoming_edges[0].source}.parquet"
+    if not parent_path.exists():
+        raise FileNotFoundError(f"Upstream Parquet not found for node '{node.node_id}': {parent_path}")
+    return pl.read_parquet(parent_path)
+
+
+def _execute_prediction_node(
+    project_key: str,
+    node: NodeConfig,
+    dag: PipelineDAG,
+    dest_path: Path,
+) -> str:
+    """Run a published model over upstream data, then an optional post_calc script."""
+    params = node.params or {}
+    raw_df = _read_upstream_df(project_key, node, dag)
+
+    model_name = str(params.get("model_name") or "").strip() or None
+    raw_version = params.get("model_version")
+    try:
+        model_version = int(raw_version) if raw_version not in (None, "", 0, "0") else None
+    except (TypeError, ValueError):
+        model_version = None
+
+    sdk = DataikiRuntimeSDK(project_key)
+    try:
+        pred_df = sdk.predict_frame(
+            raw_df,
+            model_name=model_name,
+            version=model_version,
+            include_proba=True,
+        )
+    except KeyError as exc:
+        raise ValueError(f"Prediction node '{node.node_id}': {exc}") from exc
+
+    code_text = str(params.get("post_calc_code") or "").strip()
+    if not code_text:
+        result_df = pred_df
+    else:
+        sandbox_globals: Dict[str, Any] = {
+            "pl": pl,
+            "np": np,
+            "duckdb": duckdb,
+            "dataiki": sdk,
+            "__builtins__": __builtins__,
+        }
+        sandbox_locals: Dict[str, Any] = {}
+        exec(code_text, sandbox_globals, sandbox_locals)
+
+        post_calc_fn = sandbox_locals.get("post_calc") or sandbox_globals.get("post_calc")
+        if not callable(post_calc_fn):
+            raise ValueError(
+                f"Prediction node '{node.node_id}' must define "
+                "'def post_calc(pred_df, raw_df, dataiki) -> pl.DataFrame:'"
+            )
+        result_df = post_calc_fn(pred_df, raw_df, sdk)
+        if not isinstance(result_df, pl.DataFrame):
+            raise TypeError(
+                f"post_calc() in node '{node.node_id}' must return a Polars DataFrame, "
+                f"got {type(result_df).__name__}."
+            )
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    result_df.write_parquet(dest_path)
+    return dest_path.as_posix()
+
+
+def _write_data_output_sink(df: pl.DataFrame, node: NodeConfig) -> str:
+    """Write a DataFrame to the configured DB table or local file sink."""
+    params = node.params or {}
+    sink_type = str(params.get("sink_type") or "file").lower().strip()
+
+    if sink_type in ("db", "db_table", "database"):
+        conn_id = str(params.get("conn_id") or "").strip()
+        if not conn_id:
+            raise ValueError(f"Data Output node '{node.node_id}' has no connection selected.")
+        table_name = str(params.get("table_name") or "").strip()
+        if not table_name:
+            raise ValueError(f"Data Output node '{node.node_id}' has no table name.")
+        mode = str(params.get("mode") or "append").lower()
+        # Raises PermissionError before touching the destination when read-only.
+        info = get_writable_connection(conn_id)
+        write_dataframe_to_db_sink(df, conn_id, table_name, mode=mode)
+        return f"Database '{info.get('name', conn_id)}' → table '{table_name}' ({mode}, {df.height} rows)"
+
+    if sink_type in ("file", "local_file"):
+        fmt = str(params.get("format") or "parquet").lower()
+        dest_value = str(params.get("dest_path") or "").strip()
+        if not dest_value:
+            raise ValueError(f"Data Output node '{node.node_id}' has no output file path.")
+        dest_file = Path(dest_value)
+        if not dest_file.suffix:
+            dest_file = dest_file / f"{node.node_id}.{fmt}"
+        write_dataframe_to_file_sink(df, dest_file, fmt)
+        return f"File '{dest_file.as_posix()}' ({fmt}, {df.height} rows)"
+
+    raise ValueError(f"Data Output node '{node.node_id}' has unknown sink_type '{sink_type}'.")
+
+
+def _execute_data_output_node(
+    project_key: str,
+    node: NodeConfig,
+    dag: PipelineDAG,
+    dest_path: Path,
+    run_sinks: bool,
+) -> str:
+    """Cache upstream data for this node and optionally write the configured sink."""
+    df = _read_upstream_df(project_key, node, dag)
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(dest_path)
+
+    if run_sinks:
+        _write_data_output_sink(df, node)
+
+    return dest_path.as_posix()
+
+
 def execute_node(
     project_key: str,
     node: NodeConfig,
     dag: PipelineDAG,
+    run_sinks: bool = True,
 ) -> str:
     """Execute a single DAG node based on its type and write result to Parquet cache."""
     dest_path = CACHE_DIR / project_key / f"{node.node_id}.parquet"
@@ -340,6 +469,12 @@ def execute_node(
         shutil.copyfile(parent_parquet, dest_path)
         return dest_path.as_posix()
 
+    elif node.node_type == "prediction":
+        return _execute_prediction_node(project_key, node, dag, dest_path)
+
+    elif node.node_type == "data_output":
+        return _execute_data_output_node(project_key, node, dag, dest_path, run_sinks)
+
     else:
         raise ValueError(f"Unknown node type '{node.node_type}' for node '{node.node_id}'.")
 
@@ -348,6 +483,7 @@ def execute_dag(
     project_key: str,
     dag: Optional[PipelineDAG] = None,
     target_node_id: Optional[str] = None,
+    run_sinks: bool = True,
 ) -> Dict[str, str]:
     """Execute nodes in topological order up to target_node_id (or entire DAG).
 
@@ -355,6 +491,7 @@ def execute_dag(
         project_key: Unique project key.
         dag: Optional PipelineDAG instance (loaded from DB if omitted).
         target_node_id: Optional target node. If provided, executes only its ancestor subgraph.
+        run_sinks: When False, Data Output nodes only refresh their cache (no DB/file write).
 
     Returns:
         Dict mapping node_id to generated Parquet cache file path.
@@ -387,10 +524,38 @@ def execute_dag(
 
     results: Dict[str, str] = {}
     for node in nodes_to_run:
-        parquet_path = execute_node(project_key, node, dag)
+        parquet_path = execute_node(project_key, node, dag, run_sinks=run_sinks)
         results[node.node_id] = parquet_path
 
     return results
+
+
+def run_node_sink(
+    project_key: str,
+    node_id: str,
+    dag: Optional[PipelineDAG] = None,
+) -> Dict[str, Any]:
+    """Execute only the sink of a Data Output node using its cached data.
+
+    Re-runs the node's ancestors when the cache is missing so Test Write always
+    has data, but never re-runs the sink of other nodes.
+    """
+    if dag is None:
+        dag = load_pipeline_dag(project_key)
+
+    node = next((n for n in dag.nodes if n.node_id == node_id), None)
+    if node is None:
+        raise KeyError(f"Node '{node_id}' not found in DAG.")
+    if node.node_type != "data_output":
+        raise ValueError(f"Node '{node_id}' is not a Data Output node.")
+
+    cached = CACHE_DIR / project_key / f"{node_id}.parquet"
+    if not cached.exists():
+        execute_dag(project_key, dag=dag, target_node_id=node_id, run_sinks=False)
+
+    df = pl.read_parquet(cached)
+    target = _write_data_output_sink(df, node)
+    return {"node_id": node_id, "rows": df.height, "target": target}
 
 
 def trace_node_lineage(
@@ -440,6 +605,8 @@ def trace_node_lineage(
     joins: List[Dict[str, Any]] = []
     recipe_steps: List[Dict[str, Any]] = []
     python_scripts: List[Dict[str, Any]] = []
+    prediction_models: List[Dict[str, Any]] = []
+    data_sinks: List[Dict[str, Any]] = []
 
     for n in ordered_lineage_nodes:
         params = n.params or {}
@@ -484,6 +651,31 @@ def trace_node_lineage(
                 }
             )
 
+        elif n.node_type == "prediction":
+            prediction_models.append(
+                {
+                    "node_id": n.node_id,
+                    "label": n.label,
+                    "model_name": params.get("model_name", ""),
+                    "model_version": params.get("model_version"),
+                    "post_calc_code": params.get("post_calc_code", ""),
+                }
+            )
+
+        elif n.node_type == "data_output":
+            data_sinks.append(
+                {
+                    "node_id": n.node_id,
+                    "label": n.label,
+                    "sink_type": params.get("sink_type", "file"),
+                    "conn_id": params.get("conn_id"),
+                    "table_name": params.get("table_name"),
+                    "mode": params.get("mode", "append"),
+                    "format": params.get("format", "parquet"),
+                    "dest_path": params.get("dest_path"),
+                }
+            )
+
     return {
         "project_key": project_key,
         "target_node_id": target_node_id,
@@ -492,6 +684,8 @@ def trace_node_lineage(
         "joins": joins,
         "recipe_steps": recipe_steps,
         "python_scripts": python_scripts,
+        "prediction_models": prediction_models,
+        "data_sinks": data_sinks,
         "lineage_nodes": [n.model_dump() for n in ordered_lineage_nodes],
     }
 

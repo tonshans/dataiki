@@ -77,7 +77,15 @@ class NodeConfig(BaseModel):
     """Configuration for a single DAG canvas node."""
 
     node_id: str
-    node_type: Literal["ingestion", "join", "data_recipe", "py_transform", "ml_studio"]
+    node_type: Literal[
+        "ingestion",
+        "join",
+        "data_recipe",
+        "py_transform",
+        "ml_studio",
+        "prediction",
+        "data_output",
+    ]
     label: str
     position: Dict[str, float] = Field(default_factory=lambda: {"x": 0.0, "y": 0.0})
     params: Dict[str, Any] = Field(default_factory=dict)
@@ -268,6 +276,7 @@ class PromoteModelRequest(BaseModel):
     tuning_job_id: str
     trial_number: int
     activate_immediately: bool = True
+    model_name: str = ""               # Name used by scripts/dataiki.model(); defaults to project_key
 
 
 class LeaderboardEntry(BaseModel):
@@ -325,6 +334,22 @@ class ModelStatusActionRequest(BaseModel):
     """Action payload for activating, unpublishing, or rolling back model versions."""
 
     action: Literal["activate", "unpublish", "delete"]
+
+
+class FreestyleScriptCreate(BaseModel):
+    """Free-form Python script definition (Production Gateway Script Lab)."""
+
+    project_key: str
+    script_name: str
+    code: str = ""
+    schedule_config: ScheduleConfig = Field(default_factory=ScheduleConfig)
+
+
+class FreestyleScriptRunRequest(BaseModel):
+    """Ad-hoc run payload for unsaved Script Lab code."""
+
+    project_key: str
+    code: str = ""
 
 
 class JanitorPurgeRequest(BaseModel):

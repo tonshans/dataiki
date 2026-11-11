@@ -557,6 +557,7 @@ def promote_to_production(
     tuning_job_id: str,
     trial_number: int,
     activate_immediately: bool = True,
+    model_name: str = "",
 ) -> Dict[str, Any]:
     """Freeze candidate model artifact into an immutable production version (v1, v2, ...).
 
@@ -565,6 +566,7 @@ def promote_to_production(
         tuning_job_id: Completed tuning job ID in ml_jobs.
         trial_number: Trial number chosen for promotion.
         activate_immediately: If True, sets status to 'active' and deactivates prior versions.
+        model_name: Name used by freestyle scripts and API bindings (defaults to project_key).
 
     Returns:
         Dictionary containing created version metadata and artifact paths.
@@ -625,11 +627,13 @@ def promote_to_production(
     frozen_lineage["promoted_trial_number"] = best_trial
 
     # Package production bundle
+    resolved_name = (model_name or "").strip() or project_key
     prod_bundle = {
         "model": bundle_data["model"],
         "transformer": bundle_data["transformer"],
         "label_encoder": bundle_data.get("label_encoder"),
         "project_key": project_key,
+        "model_name": resolved_name,
         "version": next_ver,
         "trial_number": best_trial,
         "task_type": bundle_data["task_type"],
@@ -655,14 +659,15 @@ def promote_to_production(
         conn.execute(
             """
             INSERT INTO model_versions (
-                project_key, version, status, task_type, algorithm,
+                project_key, model_name, version, status, task_type, algorithm,
                 target_column, feature_columns_json, input_schema_json,
                 metrics_json, hyperparameters_json, frozen_lineage_json,
                 artifact_path, training_sample_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_key,
+                resolved_name,
                 next_ver,
                 version_status,
                 bundle_data["task_type"],
@@ -681,6 +686,7 @@ def promote_to_production(
     return {
         "project_key": project_key,
         "version": next_ver,
+        "model_name": resolved_name,
         "status": version_status,
         "algorithm": bundle_data["algorithm"],
         "task_type": bundle_data["task_type"],
@@ -719,6 +725,7 @@ def retrain_published_model(
     task_type = row["task_type"]
     algorithm = row["algorithm"]
     target_column = row["target_column"]
+    base_model_name = row["model_name"] or project_key
     target_node_id = frozen_lineage.get("target_node_id")
 
     # Re-execute DAG pipeline to pull fresh data
@@ -833,6 +840,7 @@ def retrain_published_model(
         "transformer": transformer,
         "label_encoder": le,
         "project_key": project_key,
+        "model_name": base_model_name,
         "version": new_version,
         "task_type": task_type,
         "algorithm": algorithm,
@@ -850,14 +858,15 @@ def retrain_published_model(
         conn.execute(
             """
             INSERT INTO model_versions (
-                project_key, version, status, task_type, algorithm,
+                project_key, model_name, version, status, task_type, algorithm,
                 target_column, feature_columns_json, input_schema_json,
                 metrics_json, hyperparameters_json, frozen_lineage_json,
                 artifact_path, training_sample_path
-            ) VALUES (?, ?, 'staged', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, 'staged', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_key,
+                base_model_name,
                 new_version,
                 task_type,
                 algorithm,
@@ -887,6 +896,7 @@ def retrain_published_model(
         "project_key": project_key,
         "base_version": base_version,
         "new_version": new_version,
+        "model_name": base_model_name,
         "status": "staged",
         "algorithm": algorithm,
         "locked_hyperparameters": locked_params,

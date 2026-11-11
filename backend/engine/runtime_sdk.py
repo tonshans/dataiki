@@ -55,12 +55,14 @@ class PublishedModelWrapper:
         self,
         bundle: Dict[str, Any],
         training_sample_path: Optional[str] = None,
+        model_name: Optional[str] = None,
     ) -> None:
         self.bundle = bundle
         self.model = bundle["model"]
         self.transformer = bundle["transformer"]
         self.label_encoder = bundle.get("label_encoder")
         self.project_key: str = bundle.get("project_key", "")
+        self.model_name: str = model_name or bundle.get("model_name") or self.project_key
         self.version: int = bundle.get("version", 1)
         self.task_type: str = bundle.get("task_type", "")
         self.algorithm: str = bundle.get("algorithm", "")
@@ -76,6 +78,7 @@ class PublishedModelWrapper:
         """Return public metadata of the published model version."""
         return {
             "project_key": self.project_key,
+            "model_name": self.model_name,
             "version": self.version,
             "task_type": self.task_type,
             "algorithm": self.algorithm,
@@ -224,40 +227,135 @@ class DataikiRuntimeSDK:
         self.project_key = project_key
         self.vault = _VaultAccessor()
 
-    def get_published_model(self, version: Optional[int] = None) -> PublishedModelWrapper:
+    def _resolve_model_row(
+        self,
+        model_name: Optional[str] = None,
+        version: Optional[int] = None,
+    ) -> Any:
+        """Locate a model version row, optionally filtered by name."""
+        with get_db() as conn:
+            if version is not None:
+                if model_name:
+                    row = conn.execute(
+                        """
+                        SELECT * FROM model_versions
+                        WHERE project_key = ? AND version = ?
+                          AND (model_name = ? OR model_name = '' OR model_name IS NULL)
+                        """,
+                        (self.project_key, version, model_name),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT * FROM model_versions WHERE project_key = ? AND version = ?",
+                        (self.project_key, version),
+                    ).fetchone()
+            else:
+                name_clause = ""
+                params: List[Any] = [self.project_key]
+                if model_name:
+                    name_clause = "AND (model_name = ? OR model_name = '' OR model_name IS NULL)"
+                    params.append(model_name)
+                row = conn.execute(
+                    f"SELECT * FROM model_versions WHERE project_key = ? {name_clause} "
+                    "AND status = 'active' ORDER BY version DESC LIMIT 1",
+                    params,
+                ).fetchone()
+                if not row:
+                    row = conn.execute(
+                        f"SELECT * FROM model_versions WHERE project_key = ? {name_clause} "
+                        "ORDER BY version DESC LIMIT 1",
+                        params,
+                    ).fetchone()
+        return row
+
+    def models(self) -> List[Dict[str, Any]]:
+        """List published model versions available to this project."""
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM model_versions WHERE project_key = ? ORDER BY version DESC",
+                (self.project_key,),
+            ).fetchall()
+        return [
+            {
+                "model_name": row["model_name"] or self.project_key,
+                "version": int(row["version"]),
+                "status": row["status"],
+                "task_type": row["task_type"],
+                "algorithm": row["algorithm"],
+                "target_column": row["target_column"],
+            }
+            for row in rows
+        ]
+
+    def get_published_model(
+        self,
+        version: Optional[int] = None,
+        model_name: Optional[str] = None,
+    ) -> PublishedModelWrapper:
         """Fetch and instantiate a PublishedModelWrapper for this project.
 
         Args:
             version: Specific model version integer (e.g. 1). If omitted, loads the
                      current 'active' model (or latest available version).
+            model_name: Model name assigned at promotion. Omit for any model.
         """
-        with get_db() as conn:
-            if version is not None:
-                row = conn.execute(
-                    "SELECT * FROM model_versions WHERE project_key = ? AND version = ?",
-                    (self.project_key, version),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT * FROM model_versions WHERE project_key = ? AND status = 'active' ORDER BY version DESC LIMIT 1",
-                    (self.project_key,),
-                ).fetchone()
-                if not row:
-                    row = conn.execute(
-                        "SELECT * FROM model_versions WHERE project_key = ? ORDER BY version DESC LIMIT 1",
-                        (self.project_key,),
-                    ).fetchone()
+        row = self._resolve_model_row(model_name=model_name, version=version)
 
         if not row:
             v_desc = f"v{version}" if version is not None else "active"
-            raise KeyError(f"No published model version ({v_desc}) found for project '{self.project_key}'.")
+            name_desc = f" '{model_name}'" if model_name else ""
+            raise KeyError(
+                f"No published model version ({v_desc}){name_desc} found for project '{self.project_key}'."
+            )
 
         artifact_path = row["artifact_path"]
         bundle = load_bundle_cached(artifact_path)
         return PublishedModelWrapper(
             bundle=bundle,
             training_sample_path=row["training_sample_path"],
+            model_name=row["model_name"] or self.project_key,
         )
+
+    def model(
+        self,
+        name: Optional[str] = None,
+        version: Optional[int] = None,
+    ) -> PublishedModelWrapper:
+        """Shorthand used inside scripts: dataiki.model('churn', version=3)."""
+        return self.get_published_model(version=version, model_name=name)
+
+    def predict_frame(
+        self,
+        df: pl.DataFrame,
+        model_name: Optional[str] = None,
+        version: Optional[int] = None,
+        include_proba: bool = True,
+    ) -> pl.DataFrame:
+        """Predict a whole DataFrame and append prediction/probability columns."""
+        if not isinstance(df, pl.DataFrame):
+            raise TypeError(
+                f"predict_frame() expects a Polars DataFrame, got {type(df).__name__}."
+            )
+        wrapper = self.get_published_model(version=version, model_name=model_name)
+        preds = wrapper.predict(df)
+        pred_vals = preds if isinstance(preds, list) else [preds]
+        pred_df = df.with_columns(
+            pl.Series(name=f"prediction_{wrapper.target_column}", values=pred_vals)
+        )
+        if include_proba and hasattr(wrapper.model, "predict_proba"):
+            try:
+                probas = wrapper.predict_proba(df)
+                if isinstance(probas, list) and len(probas) == df.height:
+                    pred_df = pred_df.with_columns(
+                        pl.Series(
+                            name=f"probability_{wrapper.target_column}",
+                            values=probas,
+                        )
+                    )
+            except Exception:
+                # Probabilities are optional metadata; never break predictions.
+                pass
+        return pred_df
 
 
 def execute_custom_endpoint_script(

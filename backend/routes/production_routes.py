@@ -17,13 +17,17 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import FileResponse
 
+from backend.config import ALLOW_FREESTYLE
 from backend.database import get_db
 from backend.engine.exporter import export_standalone_zip
 from backend.engine.job_scheduler import run_batch_job, sync_apscheduler_jobs
 from backend.engine.ml_tuner import promote_to_production, retrain_published_model
+from backend.engine.script_runner import run_freestyle_script, run_script_code
 from backend.schemas import (
     BatchJobCreate,
     CustomEndpointCreate,
+    FreestyleScriptCreate,
+    FreestyleScriptRunRequest,
     ModelStatusActionRequest,
     PromoteModelRequest,
     ScheduleConfig,
@@ -83,6 +87,7 @@ def promote_candidate_model(payload: PromoteModelRequest) -> Dict[str, Any]:
             tuning_job_id=payload.tuning_job_id,
             trial_number=payload.trial_number,
             activate_immediately=payload.activate_immediately,
+            model_name=payload.model_name,
         )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
@@ -451,4 +456,151 @@ def update_job_schedule(batch_job_id: str, schedule: ScheduleConfig) -> Dict[str
 
     sync_apscheduler_jobs()
     return {"batch_job_id": batch_job_id, "schedule": schedule.model_dump(), "status": "updated"}
+
+
+# =====================================================================
+# 4. Freestyle Script Lab (free-form Python + scheduler)
+# =====================================================================
+
+
+def _ensure_freestyle_enabled() -> None:
+    if not ALLOW_FREESTYLE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Freestyle script editor is disabled. Set DATAIKI_ALLOW_FREESTYLE=1 to enable it.",
+        )
+
+
+def _script_row_to_dict(row: Any) -> Dict[str, Any]:
+    data = dict(row)
+    try:
+        data["schedule_config"] = json.loads(data.get("schedule_config_json") or "{}")
+    except Exception:
+        data["schedule_config"] = {}
+    return data
+
+
+@router.post("/scripts/run")
+def run_freestyle_code(payload: FreestyleScriptRunRequest) -> Dict[str, Any]:
+    """Run unsaved Script Lab code once and return captured stdout."""
+    _ensure_freestyle_enabled()
+    return run_script_code(project_key=payload.project_key, code=payload.code)
+
+
+@router.post("/scripts", status_code=status.HTTP_201_CREATED)
+def create_freestyle_script(payload: FreestyleScriptCreate) -> Dict[str, Any]:
+    """Save a new free-form Python script for a project."""
+    _ensure_freestyle_enabled()
+    script_id = f"fs_{uuid.uuid4().hex[:12]}"
+
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO freestyle_scripts (
+                script_id, project_key, script_name, code, schedule_config_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                script_id,
+                payload.project_key,
+                payload.script_name,
+                payload.code,
+                json.dumps(payload.schedule_config.model_dump()),
+            ),
+        )
+
+    if payload.schedule_config.enabled:
+        sync_apscheduler_jobs()
+
+    return {"script_id": script_id, "script_name": payload.script_name, "status": "created"}
+
+
+@router.get("/scripts/{project_key}")
+def list_freestyle_scripts(project_key: str) -> List[Dict[str, Any]]:
+    """List saved free-form scripts for a project."""
+    _ensure_freestyle_enabled()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM freestyle_scripts WHERE project_key = ? ORDER BY created_at DESC",
+            (project_key,),
+        ).fetchall()
+    return [_script_row_to_dict(row) for row in rows]
+
+
+@router.get("/scripts/detail/{script_id}")
+def get_freestyle_script(script_id: str) -> Dict[str, Any]:
+    """Fetch a single saved freestyle script."""
+    _ensure_freestyle_enabled()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM freestyle_scripts WHERE script_id = ?",
+            (script_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Script '{script_id}' not found.")
+    return _script_row_to_dict(row)
+
+
+@router.put("/scripts/{script_id}")
+def update_freestyle_script(script_id: str, payload: FreestyleScriptCreate) -> Dict[str, Any]:
+    """Update a saved freestyle script definition."""
+    _ensure_freestyle_enabled()
+    with get_db() as conn:
+        cur = conn.execute(
+            """
+            UPDATE freestyle_scripts
+            SET script_name = ?, code = ?, schedule_config_json = ?
+            WHERE script_id = ?
+            """,
+            (
+                payload.script_name,
+                payload.code,
+                json.dumps(payload.schedule_config.model_dump()),
+                script_id,
+            ),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Script '{script_id}' not found.")
+
+    sync_apscheduler_jobs()
+    return {"script_id": script_id, "script_name": payload.script_name, "status": "updated"}
+
+
+@router.delete("/scripts/{script_id}")
+def delete_freestyle_script(script_id: str) -> Dict[str, str]:
+    """Delete a saved freestyle script."""
+    _ensure_freestyle_enabled()
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM freestyle_scripts WHERE script_id = ?", (script_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Script '{script_id}' not found.")
+
+    sync_apscheduler_jobs()
+    return {"status": "deleted", "script_id": script_id}
+
+
+@router.post("/scripts/{script_id}/run")
+def trigger_freestyle_script(script_id: str) -> Dict[str, Any]:
+    """Run a saved freestyle script once and persist its last output."""
+    _ensure_freestyle_enabled()
+    try:
+        return run_freestyle_script(script_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.put("/scripts/{script_id}/schedule")
+def update_freestyle_schedule(script_id: str, schedule: ScheduleConfig) -> Dict[str, Any]:
+    """Update a freestyle script schedule and sync with APScheduler."""
+    _ensure_freestyle_enabled()
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE freestyle_scripts SET schedule_config_json = ? WHERE script_id = ?",
+            (json.dumps(schedule.model_dump()), script_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Script '{script_id}' not found.")
+
+    sync_apscheduler_jobs()
+    return {"script_id": script_id, "schedule": schedule.model_dump(), "status": "updated"}
 

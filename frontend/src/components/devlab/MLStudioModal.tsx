@@ -953,6 +953,7 @@ export function MLStudioModal() {
   const [tunedModels, setTunedModels] = useState<TuningResult[]>([]);
   const [trialsSort, setTrialsSort] = useState<SortState>({ key: 'trial', direction: 'asc' });
   const [promotedVersions, setPromotedVersions] = useState<Record<string, number>>({});
+  const [modelName, setModelName] = useState('');
   const [isPromoting, setIsPromoting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
@@ -1401,7 +1402,7 @@ export function MLStudioModal() {
     setPausedCardinality(null);
     try {
       await persistSetup();
-      await api.runDag(projectKey, node.id);
+      await api.runDag(projectKey, node.id, null, false);
 
       const request: ScreeningRequest = {
         project_key: projectKey,
@@ -1570,6 +1571,7 @@ export function MLStudioModal() {
         tuning_job_id: model.tuning_job_id,
         trial_number: model.best_trial_number,
         activate_immediately: true,
+        model_name: modelName.trim(),
       });
       const version = Number(result.version ?? 0);
       if (version > 0) {
@@ -1597,6 +1599,7 @@ export function MLStudioModal() {
           tuning_job_id: model.tuning_job_id,
           trial_number: model.best_trial_number,
           activate_immediately: false,
+          model_name: modelName.trim(),
         });
         version = Number(result.version ?? 0);
         if (version > 0) {
@@ -2979,6 +2982,18 @@ export function MLStudioModal() {
                           )}
                           Export Standalone
                         </button>
+                        <div>
+                          <label className={LABEL_CLASS} htmlFor="promote-model-name">
+                            Model name (used by scripts)
+                          </label>
+                          <input
+                            id="promote-model-name"
+                            value={modelName}
+                            onChange={(event) => setModelName(event.target.value)}
+                            className={INPUT_CLASS}
+                            placeholder={`defaults to ${projectKey || 'project key'}`}
+                          />
+                        </div>
                         <button
                           type="button"
                           onClick={() => void handlePromote()}

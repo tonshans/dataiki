@@ -2,12 +2,33 @@
 
 export type ThemeMode = 'brutalism' | 'minimalist' | 'midnight';
 export type WorkspaceTab = 'development' | 'production';
-export type ProductionNavSection = 'models' | 'api_builder' | 'job_editor' | 'scheduler' | 'api_keys';
+export type ProductionNavSection =
+  | 'models'
+  | 'api_builder'
+  | 'job_editor'
+  | 'script_lab'
+  | 'scheduler'
+  | 'api_keys';
 
 // Backend Pydantic NodeConfig.node_type menerima 5 literal ini.
 // Untuk 'Split Data Card' di kanvas UI, kita gunakan ui_node_kind: 'split_data' yang diserialisasi sebagai 'data_recipe' ke backend.
-export type BackendNodeType = 'ingestion' | 'join' | 'data_recipe' | 'py_transform' | 'ml_studio';
-export type UINodeKind = 'datasource' | 'recipe' | 'split_data' | 'joiner' | 'python_script' | 'ml_studio';
+export type BackendNodeType =
+  | 'ingestion'
+  | 'join'
+  | 'data_recipe'
+  | 'py_transform'
+  | 'ml_studio'
+  | 'prediction'
+  | 'data_output';
+export type UINodeKind =
+  | 'datasource'
+  | 'recipe'
+  | 'split_data'
+  | 'joiner'
+  | 'python_script'
+  | 'ml_studio'
+  | 'prediction_model'
+  | 'data_output';
 
 export type PredictionType = 'binary_classification' | 'multiclass_classification' | 'regression' | 'forecasting';
 
@@ -327,6 +348,19 @@ export interface ProductionJobItem {
   last_run_at?: string | null;
   last_status?: 'never_run' | 'running' | 'completed' | 'warning' | 'failed';
   last_error?: string;
+  created_at?: string;
+}
+
+export interface FreestyleScriptItem {
+  script_id?: string;
+  project_key: string;
+  script_name: string;
+  code: string;
+  schedule_config: ScheduleConfig;
+  last_run_at?: string | null;
+  last_status?: 'never_run' | 'running' | 'success' | 'failed';
+  last_error?: string;
+  last_output?: string;
   created_at?: string;
 }
 

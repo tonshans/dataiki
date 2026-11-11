@@ -3,6 +3,7 @@ import type {
   ConnectionItem,
   CustomEndpointConfig,
   EdgeConfig,
+  FreestyleScriptItem,
   JanitorScanResult,
   MLSessionItem,
   NodeConfig,
@@ -289,6 +290,8 @@ function uiKindForNode(node: NodeConfig): UINodeKind {
     data_recipe: 'recipe',
     py_transform: 'python_script',
     ml_studio: 'ml_studio',
+    prediction: 'prediction_model',
+    data_output: 'data_output',
   };
   return byType[node.node_type] ?? 'recipe';
 }
@@ -711,6 +714,10 @@ export function getHealth(): Promise<HealthStatus> {
   return apiRequest<HealthStatus>('/health');
 }
 
+export function fetchFeatureFlags(): Promise<{ allow_freestyle: boolean }> {
+  return apiRequest<{ allow_freestyle: boolean }>('/system/features');
+}
+
 export async function fetchProjects(): Promise<ProjectItem[]> {
   const rows = await apiRequest<any[]>('/system/projects');
   return rows.map(parseProjectItem);
@@ -901,6 +908,7 @@ export async function runDag(
   projectKey: string,
   targetNodeId?: string | null,
   splitBranch?: { nodeId: string; branch: SplitBranch } | null,
+  runSinks = true,
 ): Promise<{ status: string; project_key: string; executed_nodes: Record<string, string> }> {
   if (splitBranch) {
     const dag = await fetchDag(projectKey);
@@ -911,7 +919,20 @@ export async function runDag(
   }
   return apiRequest('/lab/pipeline/run', {
     method: 'POST',
-    body: jsonBody({ project_key: projectKey, target_node_id: targetNodeId ?? null }),
+    body: jsonBody({
+      project_key: projectKey,
+      target_node_id: targetNodeId ?? null,
+      run_sinks: runSinks,
+    }),
+  });
+}
+
+export function runNodeSink(
+  projectKey: string,
+  nodeId: string,
+): Promise<{ node_id: string; rows: number; target: string }> {
+  return apiRequest(`/lab/node/${segment(projectKey)}/${segment(nodeId)}/run-output`, {
+    method: 'POST',
   });
 }
 
@@ -1073,6 +1094,7 @@ export function promoteModel(payload: {
   tuning_job_id: string;
   trial_number: number;
   activate_immediately?: boolean;
+  model_name?: string;
 }): Promise<Record<string, any>> {
   return apiRequest('/production/models/promote', {
     method: 'POST',
@@ -1261,6 +1283,92 @@ export function updateJobSchedule(
   return apiRequest(`/production/jobs/${segment(jobId)}/schedule`, {
     method: 'PUT',
     body: jsonBody(scheduleToBackend(schedule, schedule.smtp_alert)),
+  });
+}
+
+/* =====================================================================
+   Production — freestyle scripts (Script Lab)
+   ===================================================================== */
+
+export interface FreestyleRunResult {
+  status: 'success' | 'error';
+  stdout: string;
+  result_preview: string;
+  error: string;
+  duration_ms: number;
+  executed_at: string;
+}
+
+function scriptFromBackend(raw: any): FreestyleScriptItem {
+  return {
+    script_id: String(raw?.script_id ?? ''),
+    project_key: String(raw?.project_key ?? ''),
+    script_name: String(raw?.script_name ?? ''),
+    code: String(raw?.code ?? ''),
+    schedule_config: scheduleFromBackend(raw?.schedule_config ?? {}),
+    last_run_at: raw?.last_run_at ?? null,
+    last_status: raw?.last_status ?? 'never_run',
+    last_error: String(raw?.last_error ?? ''),
+    last_output: String(raw?.last_output ?? ''),
+    created_at: raw?.created_at,
+  };
+}
+
+export async function fetchFreestyleScripts(projectKey: string): Promise<FreestyleScriptItem[]> {
+  const rows = await apiRequest<any[]>(`/production/scripts/${segment(projectKey)}`);
+  return rows.map(scriptFromBackend);
+}
+
+export async function saveFreestyleScript(
+  script: FreestyleScriptItem,
+): Promise<FreestyleScriptItem> {
+  const payload = {
+    project_key: script.project_key,
+    script_name: script.script_name,
+    code: script.code,
+    schedule_config: scheduleToBackend(script.schedule_config),
+  };
+  if (script.script_id) {
+    await apiRequest(`/production/scripts/${segment(script.script_id)}`, {
+      method: 'PUT',
+      body: jsonBody(payload),
+    });
+    return script;
+  }
+  const created = await apiRequest<{ script_id: string }>('/production/scripts', {
+    method: 'POST',
+    body: jsonBody(payload),
+  });
+  return { ...script, script_id: created.script_id };
+}
+
+export function deleteFreestyleScript(
+  scriptId: string,
+): Promise<{ status: string; script_id: string }> {
+  return apiRequest(`/production/scripts/${segment(scriptId)}`, { method: 'DELETE' });
+}
+
+export function runFreestyleCode(
+  projectKey: string,
+  code: string,
+): Promise<FreestyleRunResult> {
+  return apiRequest('/production/scripts/run', {
+    method: 'POST',
+    body: jsonBody({ project_key: projectKey, code }),
+  });
+}
+
+export function runFreestyleScriptNow(scriptId: string): Promise<FreestyleRunResult> {
+  return apiRequest(`/production/scripts/${segment(scriptId)}/run`, { method: 'POST' });
+}
+
+export function updateFreestyleSchedule(
+  scriptId: string,
+  schedule: ScheduleConfig,
+): Promise<{ script_id: string; status: string }> {
+  return apiRequest(`/production/scripts/${segment(scriptId)}/schedule`, {
+    method: 'PUT',
+    body: jsonBody(scheduleToBackend(schedule)),
   });
 }
 

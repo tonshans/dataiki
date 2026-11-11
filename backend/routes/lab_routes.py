@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from backend.config import CACHE_DIR
 from backend.database import get_db
-from backend.engine.dag_runner import execute_dag, load_pipeline_dag
+from backend.engine.dag_runner import execute_dag, load_pipeline_dag, run_node_sink
 from backend.engine.eda_profiler import analyze_column_deep, get_tabular_headers_and_sample
 from backend.engine.recipe_engine import _resolve_column_name, apply_recipe_steps
 from backend.schemas import (
@@ -37,6 +37,7 @@ class PipelineRunRequest(BaseModel):
     """Payload to trigger execution of DAG canvas pipeline."""
     project_key: str
     target_node_id: Optional[str] = None
+    run_sinks: bool = True
 
 
 # =====================================================================
@@ -99,6 +100,7 @@ def run_pipeline(payload: PipelineRunRequest) -> Dict[str, Any]:
         results = execute_dag(
             project_key=payload.project_key,
             target_node_id=payload.target_node_id,
+            run_sinks=payload.run_sinks,
         )
         return {
             "status": "completed",
@@ -109,6 +111,22 @@ def run_pipeline(payload: PipelineRunRequest) -> Dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Pipeline execution failed: {exc}",
+        ) from exc
+
+
+@router.post("/node/{project_key}/{node_id}/run-output")
+def run_node_output(project_key: str, node_id: str) -> Dict[str, Any]:
+    """Test Write: run only a Data Output node's sink using its cached data."""
+    try:
+        return run_node_sink(project_key=project_key, node_id=node_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Output sink failed: {exc}",
         ) from exc
 
 
@@ -142,7 +160,7 @@ def get_node_preview(
 
         if not parent_path.exists():
             try:
-                execute_dag(project_key=project_key, target_node_id=parent_node_id)
+                execute_dag(project_key=project_key, target_node_id=parent_node_id, run_sinks=False)
             except Exception as exc:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -202,7 +220,7 @@ def get_node_preview(
     # If cache Parquet is missing, trigger execution of this node's upstream lineage
     if not parquet_path.exists():
         try:
-            execute_dag(project_key=project_key, target_node_id=node_id)
+            execute_dag(project_key=project_key, target_node_id=node_id, run_sinks=False)
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -277,7 +295,7 @@ def get_column_analysis(
             parent_path = CACHE_DIR / project_key / f"{parent_node_id}.parquet"
             if not parent_path.exists():
                 try:
-                    execute_dag(project_key=project_key, target_node_id=parent_node_id)
+                    execute_dag(project_key=project_key, target_node_id=parent_node_id, run_sinks=False)
                 except Exception:
                     pass
 
@@ -314,7 +332,7 @@ def get_column_analysis(
         parquet_path = CACHE_DIR / project_key / f"{node_id}.parquet"
         if not parquet_path.exists():
             try:
-                execute_dag(project_key=project_key, target_node_id=node_id)
+                execute_dag(project_key=project_key, target_node_id=node_id, run_sinks=False)
             except Exception as exc:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,

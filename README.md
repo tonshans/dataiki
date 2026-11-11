@@ -51,6 +51,10 @@ uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 
 Oracle: default thin mode. Set `DATAIKI_ORACLE_THICK=1` jika memakai Oracle Instant Client.
 
+Freestyle Script Editor: aktif secara default (`DATAIKI_ALLOW_FREESTYLE=1`). Set
+`DATAIKI_ALLOW_FREESTYLE=0` untuk menyembunyikan editor dari UI dan menolak endpoint
+`/api/production/scripts/*`. Catatan: script berjalan dengan akses penuh ke proses server.
+
 CORS: default hanya `http://localhost:5173` dan `http://127.0.0.1:5173`. Untuk origin lain
 (mis. `npm run preview` di port 4173), set `DATAIKI_CORS_ORIGINS=http://localhost:4173`.
 Jangan set `DATAIKI_CORS_ALLOW_CREDENTIALS=1` bersama `*`.
