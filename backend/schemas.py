@@ -1,7 +1,7 @@
 """Dataiki Pydantic v2 data contracts and schemas."""
 
 from typing import Any, Dict, List, Literal, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # =====================================================================
 # 1. DAG & Recipe Contracts
@@ -35,6 +35,36 @@ class RecipeStep(BaseModel):
     label: str
     params: Dict[str, Any] = Field(default_factory=dict)
     is_train_only: bool = False  # True strictly for SMOTE and Gaussian Jitter
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            d = dict(data)
+            # 1. Fallback for op_type from action / step_type
+            if "op_type" not in d or not d["op_type"]:
+                raw_op = d.get("action") or d.get("step_type")
+                action_map = {
+                    "change_dtype": "cast_dtype",
+                    "formula_column": "add_column_formula",
+                    "split_extract_text": "split_text",
+                    "auto_generate_features": "auto_features",
+                    "augment_rows": "row_augment_smote",
+                    "smote": "row_augment_smote",
+                    "jitter": "row_augment_jitter",
+                }
+                d["op_type"] = action_map.get(str(raw_op), str(raw_op)) if raw_op else "drop_column"
+
+            # 2. Fallback for label from description / label / op_type
+            if "label" not in d or not d["label"]:
+                d["label"] = str(d.get("description") or d.get("label") or d.get("op_type") or "Step")
+
+            # 3. Fallback for is_train_only from train_only
+            if "is_train_only" not in d and "train_only" in d:
+                d["is_train_only"] = bool(d["train_only"])
+
+            return d
+        return data
 
 
 class NodeConfig(BaseModel):

@@ -327,6 +327,7 @@ export function toBackendDag(
     return {
       ...node,
       node_type: isSplit ? 'data_recipe' : node.node_type,
+      recipe_steps: steps as any,
       params: { ...node.params, ui_node_kind: uiNodeKind, recipe_steps: steps },
     };
   });
@@ -347,27 +348,27 @@ export function toBackendDag(
 function fromBackendDag(raw: any): PipelineDAG {
   const nodes: NodeConfig[] = Array.isArray(raw?.nodes)
     ? raw.nodes.map((node: any) => {
-        const params = node?.params ?? {};
-        const uiNodeKind = (params.ui_node_kind as UINodeKind | undefined) ?? 'recipe';
-        return {
-          node_id: String(node?.node_id ?? ''),
-          node_type: node?.node_type,
-          label: String(node?.label ?? ''),
-          position: { x: Number(node?.position?.x ?? 0), y: Number(node?.position?.y ?? 0) },
-          params: { ...params, ui_node_kind: uiNodeKind },
-          recipe_steps: fromBackendRecipeSteps(params.recipe_steps),
-        } satisfies NodeConfig;
-      })
+      const params = node?.params ?? {};
+      const uiNodeKind = (params.ui_node_kind as UINodeKind | undefined) ?? 'recipe';
+      return {
+        node_id: String(node?.node_id ?? ''),
+        node_type: node?.node_type,
+        label: String(node?.label ?? ''),
+        position: { x: Number(node?.position?.x ?? 0), y: Number(node?.position?.y ?? 0) },
+        params: { ...params, ui_node_kind: uiNodeKind },
+        recipe_steps: fromBackendRecipeSteps(node?.recipe_steps ?? params.recipe_steps),
+      } satisfies NodeConfig;
+    })
     : [];
 
   const edges: EdgeConfig[] = Array.isArray(raw?.edges)
     ? raw.edges.map((edge: any) => ({
-        edge_id: String(edge?.edge_id ?? `${edge?.source}->${edge?.target}`),
-        source: String(edge?.source ?? ''),
-        target: String(edge?.target ?? ''),
-        sourceHandle: edge?.sourceHandle ?? null,
-        targetHandle: edge?.targetHandle ?? null,
-      }))
+      edge_id: String(edge?.edge_id ?? `${edge?.source}->${edge?.target}`),
+      source: String(edge?.source ?? ''),
+      target: String(edge?.target ?? ''),
+      sourceHandle: edge?.sourceHandle ?? null,
+      targetHandle: edge?.targetHandle ?? null,
+    }))
     : [];
 
   return { project_key: String(raw?.project_key ?? ''), nodes, edges };
@@ -396,15 +397,15 @@ function adaptPreview(
   const rowCount = Number(raw?.total_rows ?? raw?.row_count ?? 0);
   const headers = Array.isArray(raw?.headers)
     ? raw.headers.map((header: any) => {
-        const nullCount = Number(header?.null_count ?? 0);
-        return {
-          column_name: String(header?.column_name ?? ''),
-          dtype: String(header?.dtype ?? ''),
-          fill_rate_pct: Number(header?.fill_rate_pct ?? 0),
-          null_pct: header?.null_pct ?? (rowCount > 0 ? round((nullCount / rowCount) * 100) : 0),
-          unique_count: Number(header?.unique_count ?? 0),
-        };
-      })
+      const nullCount = Number(header?.null_count ?? 0);
+      return {
+        column_name: String(header?.column_name ?? ''),
+        dtype: String(header?.dtype ?? ''),
+        fill_rate_pct: Number(header?.fill_rate_pct ?? 0),
+        null_pct: header?.null_pct ?? (rowCount > 0 ? round((nullCount / rowCount) * 100) : 0),
+        unique_count: Number(header?.unique_count ?? 0),
+      };
+    })
     : [];
 
   return {
@@ -523,17 +524,17 @@ function adaptMlSession(raw: any): MLSessionItem {
     preprocessing: (raw?.preprocessing ?? {}) as PreprocessingConfig,
     leaderboard: Array.isArray(raw?.leaderboard)
       ? raw.leaderboard.map((entry: any, index: number) => ({
-          rank: Number(entry?.rank ?? index + 1),
-          algorithm: String(entry?.algorithm ?? ''),
-          source_node_id: String(entry?.source_node_id ?? ''),
-          source_node_label: String(entry?.source_node_label ?? entry?.source_recipe_label ?? ''),
-          fit_time_sec: Number(entry?.fit_time_sec ?? 0),
-          latency_ms: Number(entry?.latency_ms ?? 0),
-          metrics: entry?.metrics ?? {},
-          confusion_matrix: normalizeConfusionMatrix(entry?.confusion_matrix),
-          feature_importance: entry?.feature_importance,
-          artifact_path: String(entry?.artifact_path ?? ''),
-        }))
+        rank: Number(entry?.rank ?? index + 1),
+        algorithm: String(entry?.algorithm ?? ''),
+        source_node_id: String(entry?.source_node_id ?? ''),
+        source_node_label: String(entry?.source_node_label ?? entry?.source_recipe_label ?? ''),
+        fit_time_sec: Number(entry?.fit_time_sec ?? 0),
+        latency_ms: Number(entry?.latency_ms ?? 0),
+        metrics: entry?.metrics ?? {},
+        confusion_matrix: normalizeConfusionMatrix(entry?.confusion_matrix),
+        feature_importance: entry?.feature_importance,
+        artifact_path: String(entry?.artifact_path ?? ''),
+      }))
       : [],
     tuning_trials: Array.isArray(raw?.tuning_trials) ? raw.tuning_trials : [],
     optuna_insights: {
@@ -803,7 +804,7 @@ export function testConnection(payload: {
   conn_type: ConnectionItem['conn_type'];
   connection_uri: string;
   headers?: Record<string, string>;
-}): Promise<{ ok?: boolean; status?: string; message?: string; [key: string]: any }> {
+}): Promise<{ ok?: boolean; status?: string; message?: string;[key: string]: any }> {
   return apiRequest('/system/connections/test', { method: 'POST', body: jsonBody(payload) });
 }
 
@@ -975,10 +976,10 @@ export async function startScreening(request: ScreeningRequest): Promise<Screeni
     status: String(raw?.status ?? ''),
     high_cardinality_columns: Array.isArray(raw?.high_cardinality_columns)
       ? raw.high_cardinality_columns.map((item: any) => ({
-          column: String(item?.column_name ?? item?.column ?? ''),
-          unique_count: Number(item?.unique_count ?? 0),
-          threshold: item?.threshold,
-        }))
+        column: String(item?.column_name ?? item?.column ?? ''),
+        unique_count: Number(item?.unique_count ?? 0),
+        threshold: item?.threshold,
+      }))
       : undefined,
     message: raw?.message,
   };
@@ -1005,10 +1006,10 @@ export async function fetchJobStatus(jobId: string): Promise<MLJobStatusResponse
     progress: Number(raw?.progress ?? 0),
     triggered_columns: Array.isArray(triggered)
       ? triggered.map((item: any) => ({
-          column: String(item?.column_name ?? item?.column ?? ''),
-          unique_count: Number(item?.unique_count ?? 0),
-          threshold: item?.threshold,
-        }))
+        column: String(item?.column_name ?? item?.column ?? ''),
+        unique_count: Number(item?.unique_count ?? 0),
+        threshold: item?.threshold,
+      }))
       : undefined,
     result: raw?.result ?? {},
     error_message: raw?.error_message,
