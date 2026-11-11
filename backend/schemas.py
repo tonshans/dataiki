@@ -45,6 +45,7 @@ class NodeConfig(BaseModel):
     label: str
     position: Dict[str, float] = Field(default_factory=lambda: {"x": 0.0, "y": 0.0})
     params: Dict[str, Any] = Field(default_factory=dict)
+    recipe_steps: List[RecipeStep] = Field(default_factory=list)
 
 
 class EdgeConfig(BaseModel):

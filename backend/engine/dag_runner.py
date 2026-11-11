@@ -230,7 +230,7 @@ def _execute_recipe_node(
 
     # Parse recipe steps
     params = node.params or {}
-    raw_steps = params.get("recipe_steps", [])
+    raw_steps = getattr(node, "recipe_steps", None) or params.get("recipe_steps", [])
     steps: List[RecipeStep] = []
     for s in raw_steps:
         if isinstance(s, RecipeStep):
@@ -468,7 +468,7 @@ def trace_node_lineage(
             )
 
         elif n.node_type == "data_recipe":
-            steps_list = params.get("recipe_steps", [])
+            steps_list = getattr(n, "recipe_steps", None) or params.get("recipe_steps", [])
             for st in steps_list:
                 if isinstance(st, RecipeStep):
                     recipe_steps.append(st.model_dump())

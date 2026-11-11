@@ -26,6 +26,7 @@ from backend.schemas import (
     ColumnAnalysisResponse,
     PipelineDAG,
     PreviewRequest,
+    RecipeStep,
     TabularPreviewResponse,
 )
 
@@ -126,6 +127,76 @@ def get_node_preview(
     payload: PreviewRequest,
 ) -> TabularPreviewResponse:
     """Generate interactive tabular preview with header fill-rates and simulated recipes."""
+    try:
+        dag = load_pipeline_dag(project_key)
+    except Exception:
+        dag = None
+
+    target_node = next((n for n in dag.nodes if n.node_id == node_id), None) if dag else None
+    incoming_edges = [e for e in dag.edges if e.target == node_id] if dag else []
+
+    # If this is a data_recipe node (or has an incoming parent edge)
+    if incoming_edges and target_node and target_node.node_type == "data_recipe":
+        parent_node_id = incoming_edges[0].source
+        parent_path = CACHE_DIR / project_key / f"{parent_node_id}.parquet"
+
+        if not parent_path.exists():
+            try:
+                execute_dag(project_key=project_key, target_node_id=parent_node_id)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Parent Parquet cache for node '{node_id}' not found and execution failed: {exc}",
+                ) from exc
+
+        if not parent_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Upstream Parquet cache not found for recipe node '{node_id}'.",
+            )
+
+        raw_df = pl.read_parquet(parent_path)
+
+        # 1. View Raw Data switch is active: return upstream raw data
+        if payload.view_raw:
+            return get_tabular_headers_and_sample(raw_df, limit=payload.limit)
+
+        # 2. View Processed Data: apply recipe steps on raw_df
+        raw_steps = (
+            payload.recipe_steps
+            or getattr(target_node, "recipe_steps", None)
+            or (target_node.params.get("recipe_steps") if target_node else [])
+        )
+        steps: List[RecipeStep] = []
+        for s in raw_steps:
+            if isinstance(s, RecipeStep):
+                steps.append(s)
+            elif isinstance(s, dict):
+                steps.append(RecipeStep.model_validate(s))
+
+        if steps:
+            try:
+                transformed_df, modified_cols = apply_recipe_steps(
+                    df=raw_df,
+                    steps=steps,
+                    include_train_only=False,
+                    fail_fast_mode=False,
+                )
+                resp = get_tabular_headers_and_sample(transformed_df, limit=payload.limit)
+                resp.modified_columns = modified_cols
+                dest_path = CACHE_DIR / project_key / f"{node_id}.parquet"
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                transformed_df.write_parquet(dest_path)
+                return resp
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Recipe simulation failed: {exc}",
+                ) from exc
+
+        # If no steps configured on recipe, return raw_df
+        return get_tabular_headers_and_sample(raw_df, limit=payload.limit)
+
     parquet_path = CACHE_DIR / project_key / f"{node_id}.parquet"
 
     # If cache Parquet is missing, trigger execution of this node's upstream lineage

@@ -247,10 +247,14 @@ export function toBackendRecipeSteps(steps: RecipeStep[]): Array<Record<string, 
   }));
 }
 
-function fromBackendRecipeSteps(rawSteps: unknown): RecipeStep[] {
+export function fromBackendRecipeSteps(rawSteps: unknown): RecipeStep[] {
   if (!Array.isArray(rawSteps)) return [];
   const steps: RecipeStep[] = [];
   for (const raw of rawSteps as any[]) {
+    if (raw?.action) {
+      steps.push(raw as RecipeStep);
+      continue;
+    }
     const action = FRONTEND_ACTION_MAP[String(raw?.op_type)];
     const stepId = String(raw?.step_id ?? '');
     if (!action || !stepId) continue;

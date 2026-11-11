@@ -48,6 +48,67 @@ def _step_get(step: Any, key: str, default: Any = None) -> Any:
     return getattr(step, key, default)
 
 
+def _resolve_column_name(df: pl.DataFrame, col_name: Any) -> Optional[str]:
+    """Find matching column name in DataFrame, ignoring case if needed."""
+    if not col_name or not isinstance(col_name, str):
+        return None
+    name = col_name.strip()
+    if name in df.columns:
+        return name
+    lower_target = name.lower()
+    for col in df.columns:
+        if col.lower() == lower_target:
+            return col
+    return None
+
+
+def _resolve_column_names(df: pl.DataFrame, col_names: Any) -> List[str]:
+    """Resolve a list or comma-separated string of column names to actual df columns."""
+    if isinstance(col_names, str):
+        items = [c.strip() for c in col_names.split(",") if c.strip()]
+    elif isinstance(col_names, (list, tuple, set)):
+        items = [str(c).strip() for c in col_names if str(c).strip()]
+    else:
+        return []
+    resolved = []
+    seen = set()
+    for item in items:
+        matched = _resolve_column_name(df, item)
+        if matched and matched not in seen:
+            resolved.append(matched)
+            seen.add(matched)
+    return resolved
+
+
+def _coerce_filter_value(df: pl.DataFrame, col: str, val: Any) -> Any:
+    """Coerce string filter value to match the column's numeric/boolean dtype in Polars."""
+    if val is None or not isinstance(val, str):
+        return val
+    text = val.strip()
+    if col not in df.columns:
+        return val
+    dtype = df[col].dtype
+    if dtype.is_integer():
+        try:
+            return int(text)
+        except ValueError:
+            try:
+                return int(float(text))
+            except ValueError:
+                return text
+    if dtype.is_float():
+        try:
+            return float(text)
+        except ValueError:
+            return text
+    if dtype == pl.Boolean:
+        if text.lower() in ("true", "1", "yes", "t"):
+            return True
+        if text.lower() in ("false", "0", "no", "f"):
+            return False
+    return text
+
+
 def _resolve_polars_dtype(dtype_name: str) -> pl.DataType:
     """Map string dtype name to Polars DataType."""
     mapping = {
@@ -229,7 +290,7 @@ def apply_recipe_steps(
             targets = params.get("columns", [])
             if not targets and "column" in params:
                 targets = [params["column"]]
-            to_drop = [c for c in targets if c in current_df.columns]
+            to_drop = _resolve_column_names(current_df, targets)
             if to_drop:
                 current_df = current_df.drop(to_drop)
                 modified_columns.extend(to_drop)
@@ -239,23 +300,28 @@ def apply_recipe_steps(
             mapping = params.get("mapping", {})
             if not mapping and "old_name" in params and "new_name" in params:
                 mapping = {params["old_name"]: params["new_name"]}
-            valid_mapping = {k: v for k, v in mapping.items() if k in current_df.columns}
+            valid_mapping = {}
+            for old_name, new_name in mapping.items():
+                matched = _resolve_column_name(current_df, old_name)
+                if matched:
+                    valid_mapping[matched] = str(new_name)
             if valid_mapping:
                 current_df = current_df.rename(valid_mapping)
                 modified_columns.extend(list(valid_mapping.values()))
 
         # 3. cast_dtype
         elif op == "cast_dtype":
-            col = params.get("column")
+            col = _resolve_column_name(current_df, params.get("column"))
             target_dtype_str = params.get("target_dtype")
-            mapping = dict(params.get("mapping", {}))
+            raw_mapping = dict(params.get("mapping", {}))
             if col and target_dtype_str:
-                mapping[col] = target_dtype_str
+                raw_mapping[col] = target_dtype_str
 
-            for c_name, d_str in mapping.items():
-                if c_name not in current_df.columns:
+            for raw_col, d_str in raw_mapping.items():
+                c_name = _resolve_column_name(current_df, raw_col)
+                if not c_name or c_name not in current_df.columns:
                     if fail_fast_mode:
-                        raise RecipeValidationError(_step_get(step, "label", ""), message=f"Column '{c_name}' not found for casting")
+                        raise RecipeValidationError(_step_get(step, "label", ""), message=f"Column '{raw_col}' not found for casting")
                     continue
 
                 target_pl_dtype = _resolve_polars_dtype(d_str)
@@ -293,10 +359,11 @@ def apply_recipe_steps(
 
         # 4. fill_na
         elif op == "fill_na":
-            col = params.get("column")
+            col = _resolve_column_name(current_df, params.get("column"))
             strategy = params.get("strategy", "constant")
             fill_val = params.get("value")
-            cols_to_fill = params.get("columns", [col] if col else [])
+            raw_cols = params.get("columns", [col] if col else [])
+            cols_to_fill = _resolve_column_names(current_df, raw_cols)
 
             for c_name in cols_to_fill:
                 if c_name not in current_df.columns:
@@ -310,7 +377,8 @@ def apply_recipe_steps(
                         )
                     continue
                 if strategy == "constant":
-                    current_df = current_df.with_columns(pl.col(c_name).fill_null(fill_val))
+                    typed_val = _coerce_filter_value(current_df, c_name, fill_val) if fill_val is not None else fill_val
+                    current_df = current_df.with_columns(pl.col(c_name).fill_null(typed_val))
                 elif strategy == "mean":
                     m_val = float(s.drop_nulls().mean()) if s.drop_nulls().len() > 0 else 0.0
                     current_df = current_df.with_columns(pl.col(c_name).fill_null(m_val))
@@ -329,14 +397,17 @@ def apply_recipe_steps(
 
         # 5. filter_row
         elif op == "filter_row":
-            col = params.get("column")
+            raw_col = params.get("column")
+            col = _resolve_column_name(current_df, raw_col)
             operator = params.get("operator", "==")
-            val = params.get("value")
+            raw_val = params.get("value")
 
-            if col not in current_df.columns:
+            if not col or col not in current_df.columns:
                 if fail_fast_mode:
-                    raise RecipeValidationError(_step_get(step, "label", ""), message=f"Column '{col}' not found for filter")
+                    raise RecipeValidationError(_step_get(step, "label", ""), message=f"Column '{raw_col}' not found for filter")
                 continue
+
+            val = _coerce_filter_value(current_df, col, raw_val)
 
             # Construct filter condition
             op_norm = operator.strip().lower()
@@ -353,15 +424,25 @@ def apply_recipe_steps(
             elif op_norm in ("<=", "lte"):
                 cond = pl.col(col) <= val
             elif op_norm == "in":
-                val_list = val if isinstance(val, list) else [val]
+                if isinstance(raw_val, list):
+                    val_list = [_coerce_filter_value(current_df, col, v) for v in raw_val]
+                elif isinstance(raw_val, str) and "," in raw_val:
+                    val_list = [_coerce_filter_value(current_df, col, v.strip()) for v in raw_val.split(",")]
+                else:
+                    val_list = [val]
                 cond = pl.col(col).is_in(val_list)
             elif op_norm in ("not_in", "not in"):
-                val_list = val if isinstance(val, list) else [val]
+                if isinstance(raw_val, list):
+                    val_list = [_coerce_filter_value(current_df, col, v) for v in raw_val]
+                elif isinstance(raw_val, str) and "," in raw_val:
+                    val_list = [_coerce_filter_value(current_df, col, v.strip()) for v in raw_val.split(",")]
+                else:
+                    val_list = [val]
                 cond = ~pl.col(col).is_in(val_list)
             elif op_norm == "contains":
-                cond = pl.col(col).cast(pl.Utf8).str.contains(str(val), literal=True)
+                cond = pl.col(col).cast(pl.Utf8).str.contains(str(raw_val), literal=True)
             elif op_norm == "regex":
-                cond = pl.col(col).cast(pl.Utf8).str.contains(str(val))
+                cond = pl.col(col).cast(pl.Utf8).str.contains(str(raw_val))
             elif op_norm == "is_null":
                 cond = pl.col(col).is_null()
             elif op_norm == "is_not_null":
@@ -437,10 +518,10 @@ def apply_recipe_steps(
 
         # 7. split_text
         elif op == "split_text":
-            col = params.get("column")
+            col = _resolve_column_name(current_df, params.get("column"))
             delimiter = params.get("delimiter", ",")
             new_cols = params.get("new_columns", [])
-            if col in current_df.columns:
+            if col and col in current_df.columns:
                 split_series = pl.col(col).cast(pl.Utf8).str.split(delimiter)
                 if new_cols:
                     for i, target_c in enumerate(new_cols):
@@ -459,11 +540,11 @@ def apply_recipe_steps(
 
         # 8. regex_extract
         elif op == "regex_extract":
-            col = params.get("column")
+            col = _resolve_column_name(current_df, params.get("column"))
             pattern = params.get("pattern", "")
             new_col = params.get("new_column", f"{col}_extracted")
             group_idx = int(params.get("group_index", 1))
-            if col in current_df.columns and pattern:
+            if col and col in current_df.columns and pattern:
                 current_df = current_df.with_columns(
                     pl.col(col).cast(pl.Utf8).str.extract(pattern, group_idx).alias(new_col)
                 )
@@ -471,9 +552,9 @@ def apply_recipe_steps(
 
         # 9. string_clean
         elif op == "string_clean":
-            col = params.get("column")
+            col = _resolve_column_name(current_df, params.get("column"))
             operations = params.get("operations") or [params.get("clean_type", "trim")]
-            if col in current_df.columns:
+            if col and col in current_df.columns:
                 expr = pl.col(col).cast(pl.Utf8)
                 for clean_op in operations:
                     c_op = clean_op.strip().lower()
@@ -488,11 +569,11 @@ def apply_recipe_steps(
 
         # 10. find_replace
         elif op == "find_replace":
-            col = params.get("column")
+            col = _resolve_column_name(current_df, params.get("column"))
             mapping = params.get("mapping")
             if not mapping and "find" in params and "replace" in params:
                 mapping = {params["find"]: params["replace"]}
-            if col in current_df.columns and mapping:
+            if col and col in current_df.columns and mapping:
                 current_df = current_df.with_columns(
                     pl.col(col).replace(mapping).alias(col)
                 )
@@ -500,12 +581,12 @@ def apply_recipe_steps(
 
         # 11. binning
         elif op == "binning":
-            col = params.get("column")
+            col = _resolve_column_name(current_df, params.get("column"))
             new_col = params.get("new_column", f"{col}_binned")
             bins = params.get("bins")
             labels = params.get("labels")
 
-            if col in current_df.columns:
+            if col and col in current_df.columns:
                 if bins:
                     breaks = sorted([float(b) for b in bins])
                     expr = pl.when(pl.col(col) < breaks[0]).then(
@@ -549,8 +630,8 @@ def apply_recipe_steps(
 
         # 12. clip_outliers (Winsorize)
         elif op == "clip_outliers":
-            col = params.get("column")
-            if col in current_df.columns and current_df[col].dtype.is_numeric():
+            col = _resolve_column_name(current_df, params.get("column"))
+            if col and col in current_df.columns and current_df[col].dtype.is_numeric():
                 s_clean = current_df[col].drop_nulls()
                 if s_clean.len() > 0:
                     if "lower_bound" in params and "upper_bound" in params:
@@ -576,11 +657,11 @@ def apply_recipe_steps(
 
         # 13. datetime_extract
         elif op == "datetime_extract":
-            col = params.get("column")
+            col = _resolve_column_name(current_df, params.get("column"))
             features = params.get(
                 "features", ["year", "month", "day", "day_of_week", "is_weekend"]
             )
-            if col in current_df.columns:
+            if col and col in current_df.columns:
                 dt_expr = pl.col(col)
                 if not current_df[col].dtype.is_temporal():
                     dt_expr = dt_expr.cast(pl.Utf8).str.to_datetime(strict=False)

@@ -168,6 +168,7 @@ function uiKindFromConfig(node: NodeConfig): UINodeKind {
 
 function flowNodeFromConfig(node: NodeConfig): Node<CanvasNodeData> {
   const kind = uiKindFromConfig(node);
+  const rawSteps = node.recipe_steps ?? node.params?.recipe_steps ?? [];
   return {
     id: node.node_id,
     type: kind,
@@ -178,7 +179,7 @@ function flowNodeFromConfig(node: NodeConfig): Node<CanvasNodeData> {
       ui_node_kind: kind,
       label: node.label || NODE_LABELS[kind],
       params: { ...node.params },
-      recipe_steps: node.recipe_steps ?? [],
+      recipe_steps: api.fromBackendRecipeSteps(rawSteps),
     },
   };
 }
