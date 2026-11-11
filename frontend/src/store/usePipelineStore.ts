@@ -111,13 +111,13 @@ const MAX_INPUTS: Record<UINodeKind, number> = {
 };
 
 const MAX_OUTPUTS: Record<UINodeKind, number> = {
-  datasource: 1,
-  recipe: 1,
-  split_data: 2,
-  joiner: 1,
-  python_script: 1,
+  datasource: Infinity,
+  recipe: Infinity,
+  split_data: Infinity,
+  joiner: Infinity,
+  python_script: Infinity,
   ml_studio: 0,
-  prediction_model: 1,
+  prediction_model: Infinity,
   data_output: 0,
 };
 
@@ -363,6 +363,7 @@ interface PipelineState {
   onNodesChange: (changes: NodeChange<Node<CanvasNodeData>>[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
+  removeEdge: (edgeId: string) => void;
   addNodeFromPalette: (kind: UINodeKind, position?: { x: number; y: number }) => string;
   updateNodeConfig: (nodeId: string, patch: Partial<CanvasNodeData>) => void;
   deleteNode: (nodeId: string) => Promise<void>;
@@ -660,7 +661,36 @@ export const usePipelineStore = create<PipelineState>()(
       },
 
       onEdgesChange: (changes) => {
-        set((state) => ({ edges: applyEdgeChanges(changes, state.edges) }));
+        set((state) => {
+          const nextEdges = applyEdgeChanges(changes, state.edges);
+          const removeChanges = changes.filter((c) => c.type === 'remove');
+          if (removeChanges.length > 0 && state.activeProjectKey) {
+            const dag = dagFromCanvas(state.activeProjectKey, state.nodes, nextEdges);
+            void api.saveDag(state.activeProjectKey, dag).catch((err) => {
+              state.addProcessLog(
+                'WARN',
+                `Failed to sync pipeline after edge removal: ${errorMessage(err)}`,
+              );
+            });
+          }
+          return { edges: nextEdges };
+        });
+      },
+
+      removeEdge: (edgeId) => {
+        set((state) => {
+          const nextEdges = state.edges.filter((e) => e.id !== edgeId);
+          if (state.activeProjectKey) {
+            const dag = dagFromCanvas(state.activeProjectKey, state.nodes, nextEdges);
+            void api.saveDag(state.activeProjectKey, dag).catch((err) => {
+              state.addProcessLog(
+                'WARN',
+                `Failed to sync pipeline after edge removal: ${errorMessage(err)}`,
+              );
+            });
+          }
+          return { edges: nextEdges };
+        });
       },
 
       onConnect: (connection) => {
@@ -681,7 +711,7 @@ export const usePipelineStore = create<PipelineState>()(
         const sourceKind = sourceNode.data.ui_node_kind;
         const targetKind = targetNode.data.ui_node_kind;
 
-        if ((MAX_OUTPUTS[sourceKind] ?? 1) === 0) {
+        if ((MAX_OUTPUTS[sourceKind] ?? Infinity) === 0) {
           state.addProcessLog(
             'WARN',
             `Connection rejected: '${sourceNode.data.label}' has no output port.`,
@@ -696,8 +726,9 @@ export const usePipelineStore = create<PipelineState>()(
           return;
         }
 
+        const maxOut = MAX_OUTPUTS[sourceKind] ?? Infinity;
         const outputCount = state.edges.filter((edge) => edge.source === connection.source).length;
-        if (outputCount >= (MAX_OUTPUTS[sourceKind] ?? 1)) {
+        if (outputCount >= maxOut) {
           state.addProcessLog(
             'WARN',
             `Connection rejected: all output ports on '${sourceNode.data.label}' are used.`,
@@ -713,18 +744,7 @@ export const usePipelineStore = create<PipelineState>()(
           return;
         }
 
-        const sourceHandleUsed = state.edges.some(
-          (edge) =>
-            edge.source === connection.source &&
-            edge.sourceHandle === connection.sourceHandle,
-        );
-        if (sourceHandleUsed) {
-          state.addProcessLog(
-            'WARN',
-            `Connection rejected: output port on '${sourceNode.data.label}' is already connected.`,
-          );
-          return;
-        }
+        // Target handle can only accept 1 input
         const targetHandleUsed = state.edges.some(
           (edge) =>
             edge.target === connection.target &&
@@ -737,6 +757,16 @@ export const usePipelineStore = create<PipelineState>()(
           );
           return;
         }
+
+        // Avoid duplicate connection between same source & target handles
+        const isDuplicate = state.edges.some(
+          (edge) =>
+            edge.source === connection.source &&
+            edge.target === connection.target &&
+            edge.sourceHandle === connection.sourceHandle &&
+            edge.targetHandle === connection.targetHandle,
+        );
+        if (isDuplicate) return;
 
         if (createsCycle(state.edges, connection.source, connection.target)) {
           state.addProcessLog(
@@ -753,7 +783,19 @@ export const usePipelineStore = create<PipelineState>()(
           sourceHandle: connection.sourceHandle ?? null,
           targetHandle: connection.targetHandle ?? null,
         };
-        set((current) => ({ edges: addEdge(edge, current.edges) }));
+        set((current) => {
+          const nextEdges = addEdge(edge, current.edges);
+          if (current.activeProjectKey) {
+            const dag = dagFromCanvas(current.activeProjectKey, current.nodes, nextEdges);
+            void api.saveDag(current.activeProjectKey, dag).catch((err) => {
+              current.addProcessLog(
+                'WARN',
+                `Failed to sync pipeline after connection: ${errorMessage(err)}`,
+              );
+            });
+          }
+          return { edges: nextEdges };
+        });
       },
 
       addNodeFromPalette: (kind, position) => {

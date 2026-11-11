@@ -3,20 +3,25 @@ import type { DragEvent as ReactDragEvent } from 'react';
 import {
   Background,
   BackgroundVariant,
+  BaseEdge,
+  EdgeLabelRenderer,
   ReactFlow,
   ReactFlowProvider,
+  getBezierPath,
   useReactFlow,
 } from '@xyflow/react';
 import type {
   Connection,
   Edge,
+  EdgeProps,
+  EdgeTypes,
   Node,
   NodeMouseHandler,
   NodeProps,
   NodeTypes,
   XYPosition,
 } from '@xyflow/react';
-import { Plus } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 import { nodeTypes } from './CustomNodes';
 import { PALETTE_DRAG_MIME } from './SidebarPalette';
 import { usePipelineStore } from '../../store/usePipelineStore';
@@ -38,13 +43,13 @@ const MAX_INPUTS: Record<UINodeKind, number> = {
 };
 
 const MAX_OUTPUTS: Record<UINodeKind, number> = {
-  datasource: 1,
-  recipe: 1,
-  split_data: 2,
-  joiner: 1,
-  python_script: 1,
+  datasource: Infinity,
+  recipe: Infinity,
+  split_data: Infinity,
+  joiner: Infinity,
+  python_script: Infinity,
   ml_studio: 0,
-  prediction_model: 1,
+  prediction_model: Infinity,
   data_output: 0,
 };
 
@@ -112,6 +117,81 @@ const CANVAS_NODE_TYPES: NodeTypes = {
   ghost: GhostNode,
 };
 
+function DeletableEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style = {},
+  markerEnd,
+  selected,
+}: EdgeProps) {
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  });
+
+  const removeEdge = usePipelineStore((state) => state.removeEdge);
+  const [isHovered, setIsHovered] = useState(false);
+
+  return (
+    <>
+      <BaseEdge
+        path={edgePath}
+        markerEnd={markerEnd}
+        style={{
+          ...style,
+          strokeWidth: selected || isHovered ? 2.5 : 1.75,
+          stroke: selected
+            ? 'var(--accent-primary)'
+            : isHovered
+              ? 'var(--accent-secondary)'
+              : 'var(--border-color)',
+          transition: 'stroke 0.15s, stroke-width 0.15s',
+        }}
+        interactionWidth={30}
+      />
+      <EdgeLabelRenderer>
+        <div
+          style={{
+            position: 'absolute',
+            transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+            pointerEvents: 'all',
+          }}
+          className="nodrag nopan"
+          onMouseEnter={() => setIsHovered(true)}
+          onMouseLeave={() => setIsHovered(false)}
+        >
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              removeEdge(id);
+            }}
+            title="Hapus hubungan ini (atau klik garis lalu tekan tombol Del)"
+            className={`flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--accent-danger)] shadow-md transition-all hover:scale-125 hover:border-[var(--accent-danger)] hover:bg-[var(--accent-danger)] hover:text-white ${
+              selected || isHovered ? 'opacity-100 scale-100' : 'opacity-0 pointer-events-none scale-90'
+            }`}
+          >
+            <X size={11} strokeWidth={2.5} />
+          </button>
+        </div>
+      </EdgeLabelRenderer>
+    </>
+  );
+}
+
+const CANVAS_EDGE_TYPES: EdgeTypes = {
+  default: DeletableEdge,
+};
+
 function ghostNode(
   kind: UINodeKind,
   label: string,
@@ -145,6 +225,7 @@ function FlowCanvasInner() {
   const onNodesChange = usePipelineStore((state) => state.onNodesChange);
   const onEdgesChange = usePipelineStore((state) => state.onEdgesChange);
   const onConnect = usePipelineStore((state) => state.onConnect);
+  const removeEdge = usePipelineStore((state) => state.removeEdge);
   const addNodeFromPalette = usePipelineStore((state) => state.addNodeFromPalette);
   const setSelectedNodeId = usePipelineStore((state) => state.setSelectedNodeId);
   const selectedNodeId = usePipelineStore((state) => state.selectedNodeId);
@@ -232,14 +313,12 @@ function FlowCanvasInner() {
 
     const tips = realNodes.filter((node) => {
       const kind = node.data.ui_node_kind;
-      return (outgoingCount.get(node.id) ?? 0) < (MAX_OUTPUTS[kind] ?? 0);
+      if ((MAX_OUTPUTS[kind] ?? 0) === 0) return false;
+      return (outgoingCount.get(node.id) ?? 0) === 0;
     });
     if (tips.length === 0) return [];
 
-    const freePorts = tips.reduce((total, node) => {
-      const kind = node.data.ui_node_kind;
-      return total + (MAX_OUTPUTS[kind] ?? 0) - (outgoingCount.get(node.id) ?? 0);
-    }, 0);
+    const freePorts = tips.length;
 
     const lastTip = tips[tips.length - 1];
     const ghosts = [
@@ -279,22 +358,29 @@ function FlowCanvasInner() {
       if ((MAX_OUTPUTS[sourceKind] ?? 0) === 0) return false;
       if ((MAX_INPUTS[targetKind] ?? 0) === 0) return false;
 
+      const maxOut = MAX_OUTPUTS[sourceKind] ?? Infinity;
       const outputCount = edges.filter((edge) => edge.source === connection.source).length;
       const inputCount = edges.filter((edge) => edge.target === connection.target).length;
-      if (outputCount >= (MAX_OUTPUTS[sourceKind] ?? 0)) return false;
+      if (outputCount >= maxOut) return false;
       if (inputCount >= (MAX_INPUTS[targetKind] ?? 0)) return false;
 
-      const sourceHandleUsed = edges.some(
-        (edge) =>
-          edge.source === connection.source &&
-          edge.sourceHandle === connection.sourceHandle,
-      );
+      // Target port can only accept 1 incoming connection
       const targetHandleUsed = edges.some(
         (edge) =>
           edge.target === connection.target &&
           edge.targetHandle === connection.targetHandle,
       );
-      if (sourceHandleUsed || targetHandleUsed) return false;
+      if (targetHandleUsed) return false;
+
+      // Prevent exact duplicate connection between same handles
+      const isDuplicate = edges.some(
+        (edge) =>
+          edge.source === connection.source &&
+          edge.target === connection.target &&
+          edge.sourceHandle === connection.sourceHandle &&
+          edge.targetHandle === connection.targetHandle,
+      );
+      if (isDuplicate) return false;
 
       return !createsCycle(edges, connection.source, connection.target);
     },
@@ -367,12 +453,18 @@ function FlowCanvasInner() {
         nodes={canvasNodes}
         edges={edges}
         nodeTypes={CANVAS_NODE_TYPES}
+        edgeTypes={CANVAS_EDGE_TYPES}
+        defaultEdgeOptions={{ type: 'default' }}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeClick={handleNodeClick}
         onNodeDoubleClick={handleNodeDoubleClick}
         onPaneClick={handlePaneClick}
+        onEdgeContextMenu={(event, edge) => {
+          event.preventDefault();
+          removeEdge(edge.id);
+        }}
         isValidConnection={isValidConnection}
         deleteKeyCode={['Delete', 'Backspace']}
         fitView
