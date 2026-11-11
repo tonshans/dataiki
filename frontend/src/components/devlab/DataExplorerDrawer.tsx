@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import {
   AlertCircle,
@@ -7,12 +7,17 @@ import {
   Eye,
   EyeOff,
   FileSpreadsheet,
+  Filter,
+  FilterX,
   GripHorizontal,
   Info,
   Loader2,
+  RefreshCw,
+  Search,
   Table2,
   Terminal,
   Trash2,
+  X,
 } from 'lucide-react';
 import { usePipelineStore } from '../../store/usePipelineStore';
 import { useUIStore } from '../../store/useUIStore';
@@ -26,6 +31,14 @@ const TAB_BUTTON =
   'flex items-center gap-1.5 border-[length:var(--border-width)] px-2.5 py-1 text-[11px] font-bold rounded-[var(--border-radius)] transition-colors';
 const TOOL_BUTTON =
   'flex items-center gap-1.5 border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] px-2.5 py-1 text-[11px] font-bold text-[var(--text-main)] rounded-[var(--border-radius)] transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-not-allowed disabled:opacity-50';
+
+const ROW_LIMIT_OPTIONS = [
+  { value: 100, label: '100 rows' },
+  { value: 500, label: '500 rows' },
+  { value: 1000, label: '1,000 rows' },
+  { value: 5000, label: '5,000 rows' },
+  { value: 0, label: 'All rows' },
+];
 
 function clampHeight(height: number): number {
   const max = Math.max(MIN_DRAWER_HEIGHT, window.innerHeight - 140);
@@ -92,10 +105,53 @@ export function DataExplorerDrawer() {
   const clearProcessLogs = usePipelineStore((state) => state.clearProcessLogs);
   const setIsRawPreview = usePipelineStore((state) => state.setIsRawPreview);
   const fetchNodePreview = usePipelineStore((state) => state.fetchNodePreview);
+  const clearColumnAnalysisCache = usePipelineStore((state) => state.clearColumnAnalysisCache);
 
   const [isResizing, setIsResizing] = useState(false);
   const [isTogglingRaw, setIsTogglingRaw] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [rowLimit, setRowLimit] = useState<number>(100);
+  const [pendingLimit, setPendingLimit] = useState<number | null>(null);
+  const [showLimitWarning, setShowLimitWarning] = useState(false);
+  const [isChangingLimit, setIsChangingLimit] = useState(false);
+
+  // Visual column filtering states
+  const [columnFilters, setColumnFilters] = useState<Record<string, Set<string>>>({});
+  const [activeFilterCol, setActiveFilterCol] = useState<string | null>(null);
+  const [filterSearch, setFilterSearch] = useState('');
+  const [filterDraft, setFilterDraft] = useState<Set<string>>(new Set());
+
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+
+  // Reset limit & visual filters when switching to a different node
+  const previousNodeIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (tabularPreview && tabularPreview.node_id !== previousNodeIdRef.current) {
+      previousNodeIdRef.current = tabularPreview.node_id;
+      setRowLimit(100);
+      setColumnFilters({});
+      setActiveFilterCol(null);
+    }
+  }, [tabularPreview]);
+
+  // Handle escape / outside click for column filter popover
+  useEffect(() => {
+    if (!activeFilterCol) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setActiveFilterCol(null);
+    };
+    const handleClickOutside = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest('.column-filter-popover')) {
+        setActiveFilterCol(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [activeFilterCol]);
 
   const selectedNodeLabel = useMemo(() => {
     if (!tabularPreview) return '';
@@ -159,7 +215,7 @@ export function DataExplorerDrawer() {
     setIsRawPreview(nextRaw);
     setIsTogglingRaw(true);
     try {
-      await fetchNodePreview(tabularPreview.node_id);
+      await fetchNodePreview(tabularPreview.node_id, rowLimit);
       addToast('info', nextRaw ? 'Showing raw data.' : 'Showing processed data.');
     } catch (error) {
       setIsRawPreview(tabularPreview.is_raw_view);
@@ -168,6 +224,150 @@ export function DataExplorerDrawer() {
       setIsTogglingRaw(false);
     }
   };
+
+  const onSelectRowLimit = (newLimit: number) => {
+    if (!tabularPreview) return;
+    if (newLimit === rowLimit) return;
+    if ((newLimit === 0 || newLimit >= 5000) && tabularPreview.row_count > 1000) {
+      setPendingLimit(newLimit);
+      setShowLimitWarning(true);
+      return;
+    }
+    void executeLimitChange(newLimit);
+  };
+
+  const executeLimitChange = async (limitToApply: number) => {
+    if (!tabularPreview) return;
+    setIsChangingLimit(true);
+    try {
+      await fetchNodePreview(tabularPreview.node_id, limitToApply);
+      setRowLimit(limitToApply);
+      addToast(
+        'info',
+        `Loaded ${limitToApply === 0 ? 'all ' + tabularPreview.row_count.toLocaleString() : limitToApply} rows.`,
+      );
+    } catch (err) {
+      addToast('error', `Failed to load rows: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsChangingLimit(false);
+      setShowLimitWarning(false);
+      setPendingLimit(null);
+    }
+  };
+
+  const handleRefresh = async () => {
+    if (!tabularPreview) return;
+    setIsRefreshing(true);
+    try {
+      setRowLimit(100);
+      setColumnFilters({});
+      setActiveFilterCol(null);
+      clearColumnAnalysisCache(tabularPreview.node_id);
+      await fetchNodePreview(tabularPreview.node_id, 100);
+      addToast('success', 'Data preview refreshed.');
+    } catch (error) {
+      addToast('error', `Failed to refresh preview: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  const uniqueValuesForActiveCol = useMemo(() => {
+    if (!activeFilterCol || !tabularPreview) return [];
+    const counts = new Map<string, number>();
+    for (const row of tabularPreview.rows) {
+      const v = formatCell(row[activeFilterCol]);
+      counts.set(v, (counts.get(v) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([val, count]) => ({ val, count }))
+      .sort((a, b) => b.count - a.count || a.val.localeCompare(b.val));
+  }, [activeFilterCol, tabularPreview]);
+
+  const filteredUniqueValues = useMemo(() => {
+    if (!filterSearch.trim()) return uniqueValuesForActiveCol;
+    const q = filterSearch.toLowerCase();
+    return uniqueValuesForActiveCol.filter((item) =>
+      item.val.toLowerCase().includes(q),
+    );
+  }, [uniqueValuesForActiveCol, filterSearch]);
+
+  const isAllSelected = useMemo(() => {
+    if (uniqueValuesForActiveCol.length === 0) return false;
+    return uniqueValuesForActiveCol.every((item) => filterDraft.has(item.val));
+  }, [uniqueValuesForActiveCol, filterDraft]);
+
+  const handleToggleSelectAll = () => {
+    if (isAllSelected) {
+      setFilterDraft(new Set());
+    } else {
+      setFilterDraft(new Set(uniqueValuesForActiveCol.map((item) => item.val)));
+    }
+  };
+
+  const openFilterForCol = (col: string) => {
+    setActiveFilterCol(col);
+    setFilterSearch('');
+    const existing = columnFilters[col];
+    if (existing) {
+      setFilterDraft(new Set(existing));
+    } else {
+      const vals = new Set<string>();
+      for (const row of tabularPreview?.rows ?? []) {
+        vals.add(formatCell(row[col]));
+      }
+      setFilterDraft(vals);
+    }
+  };
+
+  const handleApplyFilter = () => {
+    if (!activeFilterCol || !tabularPreview) return;
+    const totalUnique = new Set(tabularPreview.rows.map((r) => formatCell(r[activeFilterCol]))).size;
+    if (filterDraft.size === totalUnique || filterDraft.size === 0) {
+      setColumnFilters((prev) => {
+        const next = { ...prev };
+        delete next[activeFilterCol];
+        return next;
+      });
+    } else {
+      setColumnFilters((prev) => ({
+        ...prev,
+        [activeFilterCol]: new Set(filterDraft),
+      }));
+    }
+    setActiveFilterCol(null);
+  };
+
+  const handleClearCurrentFilter = () => {
+    if (!activeFilterCol) return;
+    setColumnFilters((prev) => {
+      const next = { ...prev };
+      delete next[activeFilterCol];
+      return next;
+    });
+    setActiveFilterCol(null);
+  };
+
+  const handleClearAllFilters = () => {
+    setColumnFilters({});
+    setActiveFilterCol(null);
+  };
+
+  const filteredRows = useMemo(() => {
+    if (!tabularPreview) return [];
+    const filterEntries = Object.entries(columnFilters);
+    if (filterEntries.length === 0) return tabularPreview.rows;
+    return tabularPreview.rows.filter((row) => {
+      for (const [col, allowedSet] of filterEntries) {
+        if (!allowedSet || allowedSet.size === 0) continue;
+        const cellVal = formatCell(row[col]);
+        if (!allowedSet.has(cellVal)) return false;
+      }
+      return true;
+    });
+  }, [tabularPreview, columnFilters]);
+
+  const activeFilterCount = Object.keys(columnFilters).length;
 
   const handleExport = (format: 'csv' | 'xlsx') => {
     if (!tabularPreview) return;
@@ -183,6 +383,7 @@ export function DataExplorerDrawer() {
         tabularPreview.is_raw_view ? 'raw' : 'processed',
         tabularPreview.row_count,
         tabularPreview.rows.length,
+        filteredRows.length,
         tabularPreview.last_modified_columns.join(','),
       ].join('|')
     : 'empty';
@@ -256,13 +457,49 @@ export function DataExplorerDrawer() {
         {activeBottomTab === 'preview' && tabularPreview && (
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="mr-1 text-[10px] text-[var(--text-muted)]">
-              {selectedNodeLabel} · {tabularPreview.row_count.toLocaleString()} rows · showing{' '}
-              {tabularPreview.rows.length}
+              {selectedNodeLabel} · {tabularPreview.row_count.toLocaleString()} rows
+              {activeFilterCount > 0
+                ? ` · filtered ${filteredRows.length} of ${tabularPreview.rows.length}`
+                : ` · showing ${tabularPreview.rows.length}`}
             </span>
+
+            {/* Row limit selector */}
+            <div className="flex items-center gap-1 border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] px-1.5 py-0.5 rounded-[var(--border-radius)] text-[11px]">
+              <span className="text-[10px] text-[var(--text-muted)] font-semibold">Limit:</span>
+              <select
+                value={rowLimit}
+                onChange={(e) => onSelectRowLimit(Number(e.target.value))}
+                disabled={isChangingLimit || isRefreshing}
+                className="bg-transparent font-bold text-[var(--text-main)] outline-none cursor-pointer"
+                title="Pilih jumlah baris yang dimuat"
+              >
+                {ROW_LIMIT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value} className="bg-[var(--bg-card)] text-[var(--text-main)]">
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              {isChangingLimit && <Loader2 size={11} className="animate-spin text-[var(--accent-primary)]" />}
+            </div>
+
+            {/* Clear visual filter button if active */}
+            {activeFilterCount > 0 && (
+              <button
+                type="button"
+                onClick={handleClearAllFilters}
+                className="flex items-center gap-1 border-[length:var(--border-width)] border-[var(--accent-warning)] bg-[var(--accent-warning)]/10 px-2 py-1 text-[10px] font-bold text-[var(--accent-warning)] rounded-[var(--border-radius)] hover:bg-[var(--accent-warning)]/20"
+                title="Hapus semua filter visual kolom"
+              >
+                <FilterX size={11} />
+                Clear Filters ({activeFilterCount})
+              </button>
+            )}
+
+            {/* Toggle raw / processed */}
             <button
               type="button"
               onClick={handleToggleRaw}
-              disabled={isTogglingRaw}
+              disabled={isTogglingRaw || isRefreshing}
               className={TOOL_BUTTON}
               aria-pressed={isRawView}
             >
@@ -275,6 +512,19 @@ export function DataExplorerDrawer() {
               )}
               {isRawView ? 'View Processed Data' : 'View Raw Data'}
             </button>
+
+            {/* Refresh Button */}
+            <button
+              type="button"
+              onClick={() => void handleRefresh()}
+              disabled={isRefreshing || isTogglingRaw || isChangingLimit}
+              className={TOOL_BUTTON}
+              title="Refresh preview data (reset visual filters & row limit ke 100)"
+            >
+              <RefreshCw size={12} className={isRefreshing ? 'animate-spin text-[var(--accent-primary)]' : ''} />
+              Refresh
+            </button>
+
             <button
               type="button"
               onClick={() => handleExport('csv')}
@@ -316,6 +566,13 @@ export function DataExplorerDrawer() {
 
       {activeBottomTab === 'preview' ? (
         <div className="min-h-0 flex-1 overflow-auto" role="tabpanel">
+          {activeFilterCol && (
+            <div
+              className="fixed inset-0 z-20"
+              onClick={() => setActiveFilterCol(null)}
+              aria-hidden="true"
+            />
+          )}
           {!tabularPreview ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
               <Table2 size={26} className="text-[var(--text-muted)]" />
@@ -342,11 +599,14 @@ export function DataExplorerDrawer() {
                     const nullRate =
                       header?.null_pct ?? Math.max(0, Math.min(100, 100 - fillRate));
                     const isModified = modifiedColumns.has(column);
+                    const isColFiltered = Boolean(columnFilters[column] && columnFilters[column].size > 0);
+                    const isFilterOpen = activeFilterCol === column;
+
                     return (
                       <th
                         key={column}
                         scope="col"
-                        className="min-w-[170px] border-b-[length:var(--border-width)] border-r-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-canvas)] px-2 py-1.5 align-top last:border-r-0"
+                        className="relative min-w-[180px] border-b-[length:var(--border-width)] border-r-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-canvas)] px-2 py-1.5 align-top last:border-r-0"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="min-w-0">
@@ -361,16 +621,150 @@ export function DataExplorerDrawer() {
                               {header ? ` · ${header.unique_count.toLocaleString()} unique` : ''}
                             </p>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => setActiveAnalysisColumn(column)}
-                            className="flex shrink-0 items-center gap-1 border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] px-1.5 py-0.5 text-[9px] font-bold text-[var(--text-main)] rounded-[var(--border-radius)] transition-colors hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)]"
-                            title={`Analyze ${column}`}
-                          >
-                            <BarChart3 size={10} />
-                            Analyze
-                          </button>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (isFilterOpen) {
+                                  setActiveFilterCol(null);
+                                } else {
+                                  openFilterForCol(column);
+                                }
+                              }}
+                              className={`flex shrink-0 items-center gap-0.5 border-[length:var(--border-width)] px-1.5 py-0.5 text-[9px] font-bold rounded-[var(--border-radius)] transition-colors ${
+                                isColFiltered
+                                  ? 'border-[var(--accent-warning)] bg-[var(--accent-warning)]/15 text-[var(--accent-warning)]'
+                                  : 'border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--text-main)] hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)]'
+                              }`}
+                              title={`Filter ${column} (${isColFiltered ? `${columnFilters[column].size} values selected` : 'all'})`}
+                            >
+                              <Filter size={10} className={isColFiltered ? 'fill-[var(--accent-warning)]' : ''} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setActiveAnalysisColumn(column)}
+                              className="flex shrink-0 items-center gap-1 border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] px-1.5 py-0.5 text-[9px] font-bold text-[var(--text-main)] rounded-[var(--border-radius)] transition-colors hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)]"
+                              title={`Analyze ${column}`}
+                            >
+                              <BarChart3 size={10} />
+                              Analyze
+                            </button>
+                          </div>
                         </div>
+
+                        {/* Filter Popover */}
+                        {isFilterOpen && (
+                          <div className="absolute left-1 top-full mt-1 z-30 w-64 rounded-[var(--border-radius)] border border-[var(--border-color)] bg-[var(--bg-card)] p-2.5 shadow-xl text-xs text-[var(--text-main)] font-sans">
+                            <div className="flex items-center justify-between pb-1.5 border-b border-[var(--border-color)] mb-2">
+                              <span className="font-bold text-[11px] truncate text-[var(--text-main)]">Filter: {column}</span>
+                              <button
+                                type="button"
+                                onClick={() => setActiveFilterCol(null)}
+                                className="text-[var(--text-muted)] hover:text-[var(--text-main)] p-0.5"
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+
+                            {/* Search box */}
+                            <div className="relative mb-2">
+                              <Search size={12} className="absolute left-2 top-2 text-[var(--text-muted)]" />
+                              <input
+                                type="text"
+                                placeholder="Cari nilai..."
+                                value={filterSearch}
+                                onChange={(e) => setFilterSearch(e.target.value)}
+                                className="w-full pl-6 pr-2 py-1 text-[11px] bg-[var(--bg-canvas)] border border-[var(--border-color)] rounded-[var(--border-radius)] text-[var(--text-main)] focus:outline-none focus:border-[var(--accent-primary)] font-normal"
+                                autoFocus
+                              />
+                            </div>
+
+                            {/* Select all checkbox */}
+                            <div className="flex items-center justify-between py-1 px-1 border-b border-[var(--border-color)] mb-1 text-[11px]">
+                              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={isAllSelected}
+                                  onChange={handleToggleSelectAll}
+                                  className="rounded text-[var(--accent-primary)] cursor-pointer"
+                                />
+                                <span className="font-semibold text-[var(--text-main)]">(Select All)</span>
+                              </label>
+                              <span className="text-[10px] text-[var(--text-muted)] font-normal">
+                                {filterDraft.size} / {uniqueValuesForActiveCol.length}
+                              </span>
+                            </div>
+
+                            {/* Value list */}
+                            <div className="max-h-40 overflow-y-auto space-y-0.5 py-1 text-[11px]">
+                              {filteredUniqueValues.length === 0 ? (
+                                <div className="text-[10px] text-[var(--text-muted)] text-center py-2">
+                                  Tidak ada nilai cocok
+                                </div>
+                              ) : (
+                                filteredUniqueValues.map(({ val, count }) => {
+                                  const checked = filterDraft.has(val);
+                                  return (
+                                    <label
+                                      key={val}
+                                      className="flex items-center justify-between gap-2 px-1.5 py-0.5 rounded hover:bg-[var(--bg-hover)] cursor-pointer select-none font-normal"
+                                    >
+                                      <div className="flex items-center gap-1.5 min-w-0">
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={() => {
+                                            setFilterDraft((prev) => {
+                                              const next = new Set(prev);
+                                              if (next.has(val)) next.delete(val);
+                                              else next.add(val);
+                                              return next;
+                                            });
+                                          }}
+                                          className="rounded text-[var(--accent-primary)] cursor-pointer"
+                                        />
+                                        <span className="truncate font-mono text-[11px]" title={val}>
+                                          {val === '' ? '(empty)' : val}
+                                        </span>
+                                      </div>
+                                      <span className="shrink-0 text-[9px] text-[var(--text-muted)] font-mono">
+                                        {count}
+                                      </span>
+                                    </label>
+                                  );
+                                })
+                              )}
+                            </div>
+
+                            {/* Actions: Apply & Clear */}
+                            <div className="flex items-center justify-between pt-2 border-t border-[var(--border-color)] mt-2">
+                              <button
+                                type="button"
+                                onClick={handleClearCurrentFilter}
+                                className="text-[10px] text-[var(--accent-danger)] hover:underline"
+                              >
+                                Hapus Filter
+                              </button>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveFilterCol(null)}
+                                  className="px-2 py-0.5 text-[10px] border border-[var(--border-color)] rounded-[var(--border-radius)] hover:bg-[var(--bg-hover)]"
+                                >
+                                  Batal
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleApplyFilter}
+                                  className="px-2.5 py-0.5 text-[10px] font-bold bg-[var(--accent-primary)] text-white rounded-[var(--border-radius)] hover:opacity-90"
+                                >
+                                  Terapkan
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
                         <FillRateBar fillRate={fillRate} nullRate={nullRate} />
                         {isModified && (
                           <p className="mt-0.5 text-[9px] font-bold text-[var(--accent-secondary)]">
@@ -392,8 +786,29 @@ export function DataExplorerDrawer() {
                       No rows returned.
                     </td>
                   </tr>
+                ) : filteredRows.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={columns.length}
+                      className="px-3 py-8 text-center text-xs text-[var(--text-muted)]"
+                    >
+                      <div className="flex flex-col items-center justify-center gap-1.5">
+                        <FilterX size={20} className="text-[var(--accent-warning)]" />
+                        <p className="font-bold text-[var(--text-main)]">
+                          Tidak ada baris yang cocok dengan filter visual
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleClearAllFilters}
+                          className="mt-1 text-[11px] text-[var(--accent-primary)] underline hover:opacity-80"
+                        >
+                          Hapus semua filter visual
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
                 ) : (
-                  tabularPreview.rows.map((row, rowIndex) => (
+                  filteredRows.map((row, rowIndex) => (
                     <tr
                       key={rowIndex}
                       className="hover:bg-[var(--bg-hover)]"
@@ -473,6 +888,54 @@ export function DataExplorerDrawer() {
               })}
             </ol>
           )}
+        </div>
+      )}
+      {showLimitWarning && pendingLimit !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-[var(--border-radius)] border border-[var(--border-color)] bg-[var(--bg-card)] p-5 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="rounded-full bg-[var(--accent-warning)]/20 p-2 text-[var(--accent-warning)]">
+                <AlertCircle size={22} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-sm font-bold text-[var(--text-main)]">
+                  Peringatan Kinerja (Performance Warning)
+                </h3>
+                <p className="mt-1.5 text-xs text-[var(--text-muted)] leading-relaxed">
+                  Anda memilih untuk memuat{' '}
+                  <strong className="text-[var(--text-main)]">
+                    {pendingLimit === 0
+                      ? `semua baris (${tabularPreview?.row_count.toLocaleString() ?? 'seluruh data'})`
+                      : `${pendingLimit.toLocaleString()} baris`}
+                  </strong>
+                  .
+                  Memuat data dalam jumlah sangat besar sekaligus dapat menyebabkan browser terasa berat atau memori meningkat.
+                </p>
+                <p className="mt-2 text-xs text-[var(--text-muted)]">
+                  Apakah Anda ingin tetap melanjutkan pemuatan data ini?
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex items-center justify-end gap-2 border-t border-[var(--border-color)] pt-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowLimitWarning(false);
+                  setPendingLimit(null);
+                }}
+                className="rounded-[var(--border-radius)] border border-[var(--border-color)] bg-[var(--bg-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--text-main)] hover:bg-[var(--bg-hover)]"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => void executeLimitChange(pendingLimit)}
+                className="rounded-[var(--border-radius)] bg-[var(--accent-warning)] px-3 py-1.5 text-xs font-bold text-black hover:opacity-90"
+              >
+                Lanjutkan & Muat Data
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </section>

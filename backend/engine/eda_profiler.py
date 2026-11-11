@@ -19,7 +19,7 @@ from backend.schemas import (
 
 
 def get_tabular_headers_and_sample(
-    df: pl.DataFrame, limit: int = 100
+    df: pl.DataFrame, limit: Optional[int] = 100
 ) -> TabularPreviewResponse:
     """Generate header summaries with fill-rates, null counts, and row preview sample.
 
@@ -55,7 +55,10 @@ def get_tabular_headers_and_sample(
         )
 
     # Convert head slice into standard list of dictionaries
-    sample_df = df.head(limit)
+    if limit is not None and limit > 0:
+        sample_df = df.head(limit)
+    else:
+        sample_df = df
     rows: List[Dict[str, Any]] = sample_df.to_dicts()
 
     return TabularPreviewResponse(

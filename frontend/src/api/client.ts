@@ -936,9 +936,11 @@ export async function fetchColumnAnalysis(
   nodeId: string,
   column: string,
   targetColumn?: string | null,
+  viewRaw?: boolean,
 ): Promise<ColumnDeepAnalysisResponse> {
   const query = new URLSearchParams({ column });
   if (targetColumn) query.set('target', targetColumn);
+  if (viewRaw !== undefined) query.set('view_raw', String(Boolean(viewRaw)));
   return adaptColumnAnalysis(
     await apiRequest(`/lab/node/${segment(projectKey)}/${segment(nodeId)}/column-analysis?${query}`),
     targetColumn,

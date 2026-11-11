@@ -98,7 +98,7 @@ class PreviewRequest(BaseModel):
     """Payload for interactive tabular data preview execution."""
 
     view_raw: bool = False
-    limit: int = 100
+    limit: Optional[int] = 100
     recipe_steps: List[RecipeStep] = Field(default_factory=list)
 
 

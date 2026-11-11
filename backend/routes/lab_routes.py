@@ -21,7 +21,7 @@ from backend.config import CACHE_DIR
 from backend.database import get_db
 from backend.engine.dag_runner import execute_dag, load_pipeline_dag
 from backend.engine.eda_profiler import analyze_column_deep, get_tabular_headers_and_sample
-from backend.engine.recipe_engine import apply_recipe_steps
+from backend.engine.recipe_engine import _resolve_column_name, apply_recipe_steps
 from backend.schemas import (
     ColumnAnalysisResponse,
     PipelineDAG,
@@ -258,34 +258,89 @@ def get_column_analysis(
     node_id: str,
     column: str = Query(..., description="Target column name to profile"),
     target: Optional[str] = Query(None, description="Optional target column for correlation prioritization"),
+    view_raw: bool = Query(False, description="Whether to analyze raw upstream data or processed output"),
 ) -> ColumnAnalysisResponse:
     """Compute deep statistical analysis (central tendency, dispersion, outliers, histograms)."""
-    parquet_path = CACHE_DIR / project_key / f"{node_id}.parquet"
-
-    if not parquet_path.exists():
-        try:
-            execute_dag(project_key=project_key, target_node_id=node_id)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Parquet cache missing for node '{node_id}': {exc}",
-            ) from exc
-
-    if not parquet_path.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Node Parquet cache missing: {parquet_path}",
-        )
-
-    df = pl.read_parquet(parquet_path)
-    if column not in df.columns:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Column '{column}' not found in node '{node_id}'.",
-        )
+    df: Optional[pl.DataFrame] = None
 
     try:
-        return analyze_column_deep(df=df, column_name=column, target_column=target)
+        dag = load_pipeline_dag(project_key)
+        target_node = next((n for n in dag.nodes if n.node_id == node_id), None)
+    except Exception:
+        target_node = None
+
+    # For data_recipe nodes: accurately source raw vs processed DataFrame
+    if target_node and target_node.node_type == "data_recipe":
+        incoming_edges = [e for e in dag.edges if e.target == node_id]
+        if incoming_edges:
+            parent_node_id = incoming_edges[0].source
+            parent_path = CACHE_DIR / project_key / f"{parent_node_id}.parquet"
+            if not parent_path.exists():
+                try:
+                    execute_dag(project_key=project_key, target_node_id=parent_node_id)
+                except Exception:
+                    pass
+
+            if parent_path.exists():
+                raw_df = pl.read_parquet(parent_path)
+                if view_raw:
+                    df = raw_df
+                else:
+                    raw_steps = (
+                        getattr(target_node, "recipe_steps", None)
+                        or (target_node.params.get("recipe_steps") if target_node else [])
+                    )
+                    steps: List[RecipeStep] = []
+                    for s in raw_steps:
+                        if isinstance(s, RecipeStep):
+                            steps.append(s)
+                        elif isinstance(s, dict):
+                            steps.append(RecipeStep.model_validate(s))
+
+                    if steps:
+                        try:
+                            df, _ = apply_recipe_steps(
+                                df=raw_df,
+                                steps=steps,
+                                include_train_only=False,
+                                fail_fast_mode=False,
+                            )
+                        except Exception:
+                            df = raw_df
+                    else:
+                        df = raw_df
+
+    if df is None:
+        parquet_path = CACHE_DIR / project_key / f"{node_id}.parquet"
+        if not parquet_path.exists():
+            try:
+                execute_dag(project_key=project_key, target_node_id=node_id)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Parquet cache missing for node '{node_id}': {exc}",
+                ) from exc
+
+        if not parquet_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Node Parquet cache missing: {parquet_path}",
+            )
+
+        df = pl.read_parquet(parquet_path)
+
+    matched_col = _resolve_column_name(df, column)
+    if not matched_col:
+        view_label = "raw" if view_raw else "processed"
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Column '{column}' not found in node '{node_id}' ({view_label} view).",
+        )
+
+    matched_target = _resolve_column_name(df, target) if target else None
+
+    try:
+        return analyze_column_deep(df=df, column_name=matched_col, target_column=matched_target)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -354,13 +354,15 @@ interface PipelineState {
   updateNodeConfig: (nodeId: string, patch: Partial<CanvasNodeData>) => void;
   deleteNode: (nodeId: string) => Promise<void>;
 
-  fetchNodePreview: (nodeId?: string) => Promise<TabularPreviewData>;
-  saveNodeRecipe: (nodeId: string, recipeSteps: RecipeStep[]) => Promise<TabularPreviewData>;
+  fetchNodePreview: (nodeId?: string, limit?: number) => Promise<TabularPreviewData>;
+  saveNodeRecipe: (nodeId: string, recipeSteps: RecipeStep[], limit?: number) => Promise<TabularPreviewData>;
   fetchColumnAnalysis: (
     nodeId: string,
     column: string,
     targetColumn?: string | null,
+    viewRaw?: boolean,
   ) => Promise<ColumnDeepAnalysisResponse>;
+  clearColumnAnalysisCache: (nodeId?: string) => void;
 
   loadMLSessions: (projectKey?: string) => Promise<MLSessionItem[]>;
   startScreeningJob: (
@@ -800,7 +802,7 @@ export const usePipelineStore = create<PipelineState>()(
         }
       },
 
-      fetchNodePreview: async (nodeId) => {
+      fetchNodePreview: async (nodeId, limit) => {
         const state = get();
         const targetNodeId = nodeId ?? state.selectedNodeId;
         if (!state.activeProjectKey) throw new Error('No active project selected.');
@@ -811,6 +813,7 @@ export const usePipelineStore = create<PipelineState>()(
           const preview = await api.fetchNodePreview(state.activeProjectKey, targetNodeId, {
             viewRaw: state.isRawPreview,
             recipeSteps: node?.data.recipe_steps ?? [],
+            limit: limit !== undefined ? limit : 100,
           });
           set({ tabularPreview: preview, selectedNodeId: targetNodeId });
           get().addProcessLog(
@@ -829,7 +832,7 @@ export const usePipelineStore = create<PipelineState>()(
         }
       },
 
-      saveNodeRecipe: async (nodeId, recipeSteps) => {
+      saveNodeRecipe: async (nodeId, recipeSteps, limit) => {
         const state = get();
         if (!state.activeProjectKey) throw new Error('No active project selected.');
         const node = state.nodes.find((item) => item.id === nodeId);
@@ -849,6 +852,7 @@ export const usePipelineStore = create<PipelineState>()(
             state.activeProjectKey,
             nodeId,
             recipeSteps,
+            limit !== undefined ? limit : 100,
           );
           set({ tabularPreview: preview, selectedNodeId: nodeId });
           get().addProcessLog(
@@ -867,17 +871,19 @@ export const usePipelineStore = create<PipelineState>()(
         }
       },
 
-      fetchColumnAnalysis: async (nodeId, column, targetColumn) => {
+      fetchColumnAnalysis: async (nodeId, column, targetColumn, viewRaw) => {
         const state = get();
         if (!state.activeProjectKey) throw new Error('No active project selected.');
+        const isRaw = viewRaw !== undefined ? viewRaw : state.isRawPreview;
         try {
           const analysis = await api.fetchColumnAnalysis(
             state.activeProjectKey,
             nodeId,
             column,
             targetColumn,
+            isRaw,
           );
-          const cacheKey = `${nodeId}::${column}::${targetColumn ?? ''}`;
+          const cacheKey = `${nodeId}::${isRaw ? 'raw' : 'processed'}::${column}::${targetColumn ?? ''}`;
           set((current) => ({
             columnAnalysisCache: { ...current.columnAnalysisCache, [cacheKey]: analysis },
           }));
@@ -885,11 +891,26 @@ export const usePipelineStore = create<PipelineState>()(
         } catch (error) {
           get().addProcessLog(
             'ERROR',
-            `Column analysis failed for '${column}': ${errorMessage(error)}`,
+            `Column analysis failed for '${column}' (${isRaw ? 'raw' : 'processed'}): ${errorMessage(error)}`,
             nodeId,
           );
           throw error;
         }
+      },
+
+      clearColumnAnalysisCache: (nodeId) => {
+        if (!nodeId) {
+          set({ columnAnalysisCache: {} });
+          return;
+        }
+        const prefix = `${nodeId}::`;
+        set((current) => {
+          const nextCache: Record<string, ColumnDeepAnalysisResponse> = {};
+          for (const [k, v] of Object.entries(current.columnAnalysisCache)) {
+            if (!k.startsWith(prefix)) nextCache[k] = v;
+          }
+          return { columnAnalysisCache: nextCache };
+        });
       },
 
       loadMLSessions: async (projectKey) => {

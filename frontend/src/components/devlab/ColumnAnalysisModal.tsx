@@ -100,8 +100,9 @@ export function ColumnAnalysisModal() {
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
+  const isRaw = tabularPreview?.is_raw_view ?? false;
   const nodeId = tabularPreview?.node_id ?? selectedNodeId;
-  const cacheKey = column && nodeId ? `${nodeId}::${column}::` : '';
+  const cacheKey = column && nodeId ? `${nodeId}::${isRaw ? 'raw' : 'processed'}::${column}::` : '';
   const analysis = cacheKey ? columnAnalysisCache[cacheKey] : undefined;
 
   useEffect(() => {
@@ -115,7 +116,7 @@ export function ColumnAnalysisModal() {
 
   useEffect(() => {
     if (!column || !nodeId) return;
-    if (analysis) {
+    if (analysis && reloadToken === 0) {
       setIsLoading(false);
       setError(null);
       return;
@@ -124,7 +125,7 @@ export function ColumnAnalysisModal() {
     let cancelled = false;
     setIsLoading(true);
     setError(null);
-    fetchColumnAnalysis(nodeId, column)
+    fetchColumnAnalysis(nodeId, column, null, isRaw)
       .catch((cause) => {
         if (!cancelled) {
           setError(cause instanceof Error ? cause.message : String(cause));
@@ -137,7 +138,7 @@ export function ColumnAnalysisModal() {
     return () => {
       cancelled = true;
     };
-  }, [analysis, column, fetchColumnAnalysis, nodeId, reloadToken]);
+  }, [analysis, column, fetchColumnAnalysis, isRaw, nodeId, reloadToken]);
 
   const maxBinCount = useMemo(
     () =>
@@ -190,12 +191,22 @@ export function ColumnAnalysisModal() {
           <div className="flex min-w-0 items-start gap-2">
             <Activity size={20} className="mt-0.5 shrink-0 text-[var(--accent-primary)]" />
             <div className="min-w-0">
-              <h2
-                id="column-analysis-title"
-                className="truncate text-lg font-bold text-[var(--text-main)]"
-              >
-                Column Analysis · <span className="font-mono">{column}</span>
-              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2
+                  id="column-analysis-title"
+                  className="truncate text-lg font-bold text-[var(--text-main)]"
+                >
+                  Column Analysis · <span className="font-mono">{column}</span>
+                </h2>
+                <span
+                  className={`shrink-0 px-2 py-0.5 text-[10px] font-bold uppercase rounded-[var(--border-radius)] border-[length:var(--border-width)] ${isRaw
+                      ? 'border-blue-500/40 bg-blue-500/15 text-blue-400'
+                      : 'border-emerald-500/40 bg-emerald-500/15 text-emerald-400'
+                    }`}
+                >
+                  {isRaw ? 'Raw Data' : 'Processed Data'}
+                </span>
+              </div>
               <p className="truncate text-xs text-[var(--text-muted)]">
                 {analysis
                   ? `${analysis.dtype || 'unknown'} · ${analysis.total_rows.toLocaleString()} rows · ${nodeId}`
