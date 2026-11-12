@@ -2,6 +2,7 @@
 
 Dispatches requests dynamically to user-defined production endpoint handlers:
 - Wildcard route: GET and POST /api/v1/{project_key}/{custom_path:path}
+- Flow Group API: GET and POST /api/v1/{project_key}/flow/{group_slug}
 - Injects global 'dataiki' SDK instance into script execution context.
 - Enforces Fail-Fast Recipe contract: raises HTTP 422 Unprocessable Entity if
   input record is rejected by recipe filters or data type casts.
@@ -26,11 +27,73 @@ async def _handle_dynamic_request(
     custom_path: str,
     request: Request,
 ) -> Any:
-    """Internal dispatcher for dynamic custom endpoints."""
+    """Internal dispatcher for dynamic custom endpoints and flow group API calls."""
     method = request.method.upper().strip()
     path_with_slash = "/" + custom_path.strip("/")
     path_without_slash = custom_path.strip("/")
 
+    # ------------------------------------------------------------------
+    # Flow Group API Gateway: /flow/{group_slug}
+    # Falls through to custom endpoints when no flow group matches, so an
+    # existing user endpoint literally named 'flow/...' keeps working.
+    # ------------------------------------------------------------------
+    if path_without_slash.startswith("flow/"):
+        from backend.engine.flow_group_runner import run_flow_group
+        group_slug = path_without_slash[len("flow/"):].strip("/")
+
+        with get_db() as conn:
+            fg_row = conn.execute(
+                """
+                SELECT group_id, is_api_enabled FROM flow_groups
+                WHERE project_key = ? AND group_slug = ?
+                LIMIT 1
+                """,
+                (project_key, group_slug),
+            ).fetchone()
+
+        if fg_row and not fg_row["is_api_enabled"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Flow group API '{group_slug}' is not exposed for project "
+                    f"'{project_key}'. Enable 'Expose as REST API' in the group settings."
+                ),
+            )
+
+        if fg_row:
+            # Parse request payload
+            input_payload: Dict[str, Any] = {}
+            if method == "POST":
+                try:
+                    input_payload = await request.json()
+                except Exception:
+                    input_payload = {}
+            else:
+                input_payload = dict(request.query_params)
+
+            try:
+                result = run_flow_group(
+                    group_id=fg_row["group_id"],
+                    input_payload=input_payload,
+                    output_format="json",
+                )
+                if result.get("status") == "error":
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail={"error": result.get("error"), "group_slug": group_slug},
+                    )
+                return result
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Flow group execution error: {exc}",
+                ) from exc
+
+    # ------------------------------------------------------------------
+    # Custom Script Endpoint Gateway (original logic)
+    # ------------------------------------------------------------------
     # Search endpoint definition in database
     with get_db() as conn:
         row = conn.execute(

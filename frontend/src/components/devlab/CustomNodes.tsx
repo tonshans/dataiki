@@ -1,13 +1,18 @@
 import {
   AlertTriangle,
   BrainCircuit,
+  Calendar,
   Combine,
   Cpu,
   Database,
   GitFork,
+  Globe,
   HardDriveDownload,
   Layers,
+  Layers3,
   Loader2,
+  Pencil,
+  Play,
   Terminal,
   Trash2,
 } from 'lucide-react';
@@ -16,7 +21,7 @@ import { Handle, Position } from '@xyflow/react';
 import type { Node, NodeProps, NodeTypes } from '@xyflow/react';
 import { usePipelineStore } from '../../store/usePipelineStore';
 import { useUIStore } from '../../store/useUIStore';
-import type { CanvasNodeData, UINodeKind } from '../../types/dataiki';
+import type { CanvasNodeData, FlowGroup, UINodeKind } from '../../types/dataiki';
 
 type DataikiFlowNode = Node<CanvasNodeData, UINodeKind>;
 
@@ -149,29 +154,26 @@ export function CustomNode({
       role="group"
       aria-label={`${label}: ${summary}`}
       data-node-kind={kind}
-      className={`group relative flex h-16 w-16 items-center justify-center rounded-[var(--border-radius)] ${
-        hasError
+      className={`group relative flex h-16 w-16 items-center justify-center rounded-[var(--border-radius)] ${hasError
           ? 'hazard-stripes-danger p-1'
           : 'border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] shadow-[var(--shadow-card)]'
-      } ${selected ? 'outline outline-2 outline-offset-2 outline-[var(--accent-primary)]' : ''}`}
+        } ${selected ? 'outline outline-2 outline-offset-2 outline-[var(--accent-primary)]' : ''}`}
     >
       <button
         type="button"
         onClick={handleDelete}
         aria-label={`Delete ${label}`}
         title={`Delete ${label}`}
-        className={`nodrag absolute -left-2 -top-2 z-10 flex h-5 w-5 items-center justify-center border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--accent-danger)] rounded-[var(--border-radius)] transition-opacity hover:bg-[var(--accent-danger)] hover:text-[var(--bg-card)] shadow-[var(--shadow-card)] ${
-          selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-        }`}
+        className={`nodrag absolute -left-2 -top-2 z-10 flex h-5 w-5 items-center justify-center border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--accent-danger)] rounded-[var(--border-radius)] transition-opacity hover:bg-[var(--accent-danger)] hover:text-[var(--bg-card)] shadow-[var(--shadow-card)] ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}
       >
         <Trash2 size={11} />
       </button>
       <div
-        className={`flex h-full w-full items-center justify-center rounded-[var(--border-radius)] ${
-          hasError
+        className={`flex h-full w-full items-center justify-center rounded-[var(--border-radius)] ${hasError
             ? 'bg-[var(--bg-card)] text-[var(--accent-danger)]'
             : 'text-[var(--accent-primary)]'
-        }`}
+          }`}
       >
         <Icon size={28} strokeWidth={1.8} />
       </div>
@@ -280,4 +282,103 @@ export const nodeTypes: NodeTypes = {
   ml_studio: CustomNode,
   prediction_model: CustomNode,
   data_output: CustomNode,
+  flow_group: GroupNode as unknown as NodeTypes[string],
 };
+
+// ---------------------------------------------------------------------------
+// GroupNode — Visual node for a saved Flow Group on the canvas
+// ---------------------------------------------------------------------------
+
+export interface GroupNodeData extends Record<string, unknown> {
+  group: FlowGroup;
+  onEdit: (group: FlowGroup) => void;
+  onRunNow: (group: FlowGroup) => void;
+  isRunning?: boolean;
+}
+
+function GroupNode({ data, isConnectable }: NodeProps<Node<GroupNodeData>>) {
+  const { group, onEdit, onRunNow, isRunning } = data;
+
+  const statusColor =
+    group.last_status === 'success' ? 'var(--accent-secondary)' :
+      group.last_status === 'error' ? 'var(--accent-danger)' :
+        group.last_status === 'running' ? 'var(--accent-primary)' :
+          'var(--text-muted)';
+
+  const statusLabel =
+    group.last_status === 'success' ? '✓ Berhasil' :
+      group.last_status === 'error' ? '✗ Gagal' :
+        group.last_status === 'running' ? '⟳ Berjalan' :
+          '— Belum pernah';
+
+  return (
+    <div
+      style={{
+        minWidth: 200,
+        border: '2px dashed var(--accent-primary)',
+        borderRadius: 'var(--border-radius)',
+        background: 'var(--bg-card)',
+        padding: '10px 12px',
+        fontFamily: 'inherit',
+      }}
+    >
+      {/* Input handle */}
+      <Handle type="target" position={Position.Left} id="input" isConnectable={isConnectable} />
+
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+        <Layers3 size={14} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-main)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {group.group_name}
+        </span>
+      </div>
+
+      {/* Badges row */}
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 6 }}>
+        {group.is_api_enabled && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 9, fontWeight: 600, background: 'var(--accent-primary)', color: '#fff', borderRadius: 20, padding: '1px 6px' }}>
+            <Globe size={9} /> API
+          </span>
+        )}
+        {group.schedule_config?.is_scheduled && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 9, fontWeight: 600, background: 'var(--accent-secondary)', color: '#fff', borderRadius: 20, padding: '1px 6px' }}>
+            <Calendar size={9} /> Scheduled
+          </span>
+        )}
+        <span style={{ fontSize: 9, fontWeight: 600, color: statusColor, background: `${statusColor}20`, borderRadius: 20, padding: '1px 6px' }}>
+          {statusLabel}
+        </span>
+      </div>
+
+      {/* Output summary */}
+      {group.last_output_summary && (
+        <p style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 6, lineHeight: 1.4 }}>
+          {group.last_output_summary}
+        </p>
+      )}
+
+      {/* Action buttons */}
+      <div style={{ display: 'flex', gap: 4 }}>
+        <button
+          type="button"
+          onClick={() => onRunNow(group)}
+          disabled={isRunning}
+          style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9, fontWeight: 600, border: '1px solid var(--border-color)', background: 'var(--bg-canvas)', color: 'var(--text-main)', borderRadius: 'var(--border-radius)', padding: '2px 6px', cursor: 'pointer', opacity: isRunning ? 0.5 : 1 }}
+        >
+          {isRunning ? <Loader2 size={9} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={9} />}
+          Run
+        </button>
+        <button
+          type="button"
+          onClick={() => onEdit(group)}
+          style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9, fontWeight: 600, border: '1px solid var(--border-color)', background: 'var(--bg-canvas)', color: 'var(--text-main)', borderRadius: 'var(--border-radius)', padding: '2px 6px', cursor: 'pointer' }}
+        >
+          <Pencil size={9} /> Edit
+        </button>
+      </div>
+
+      {/* Output handle */}
+      <Handle type="source" position={Position.Right} id="output" isConnectable={isConnectable} />
+    </div>
+  );
+}

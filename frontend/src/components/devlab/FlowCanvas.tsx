@@ -21,12 +21,19 @@ import type {
   NodeTypes,
   XYPosition,
 } from '@xyflow/react';
-import { Plus, X } from 'lucide-react';
+import { Layers3, Plus, X } from 'lucide-react';
 import { nodeTypes } from './CustomNodes';
+import { FlowGroupModal } from './FlowGroupModal';
 import { PALETTE_DRAG_MIME } from './SidebarPalette';
 import { usePipelineStore } from '../../store/usePipelineStore';
 import { useUIStore } from '../../store/useUIStore';
-import type { BackendNodeType, CanvasNodeData, UINodeKind } from '../../types/dataiki';
+import type {
+  BackendNodeType,
+  CanvasNodeData,
+  FlowGroup,
+  NodeConfig,
+  UINodeKind,
+} from '../../types/dataiki';
 
 type FlowNode = Node<CanvasNodeData>;
 
@@ -176,9 +183,8 @@ function DeletableEdge({
               removeEdge(id);
             }}
             title="Hapus hubungan ini (atau klik garis lalu tekan tombol Del)"
-            className={`flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--accent-danger)] shadow-md transition-all hover:scale-125 hover:border-[var(--accent-danger)] hover:bg-[var(--accent-danger)] hover:text-white ${
-              selected || isHovered ? 'opacity-100 scale-100' : 'opacity-0 pointer-events-none scale-90'
-            }`}
+            className={`flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border-color)] bg-[var(--bg-card)] text-[var(--accent-danger)] shadow-md transition-all hover:scale-125 hover:border-[var(--accent-danger)] hover:bg-[var(--accent-danger)] hover:text-white ${selected || isHovered ? 'opacity-100 scale-100' : 'opacity-0 pointer-events-none scale-90'
+              }`}
           >
             <X size={11} strokeWidth={2.5} />
           </button>
@@ -227,6 +233,7 @@ function FlowCanvasInner() {
   const onConnect = usePipelineStore((state) => state.onConnect);
   const removeEdge = usePipelineStore((state) => state.removeEdge);
   const addNodeFromPalette = usePipelineStore((state) => state.addNodeFromPalette);
+  const activeProjectKey = usePipelineStore((state) => state.activeProjectKey);
   const setSelectedNodeId = usePipelineStore((state) => state.setSelectedNodeId);
   const selectedNodeId = usePipelineStore((state) => state.selectedNodeId);
   const deleteNode = usePipelineStore((state) => state.deleteNode);
@@ -240,6 +247,52 @@ function FlowCanvasInner() {
   const { screenToFlowPosition } = useReactFlow<FlowNode, Edge>();
   const clickTimer = useRef<number | null>(null);
   const [isPaletteDragging, setIsPaletteDragging] = useState(false);
+
+  // ---- Flow Group modal state ----
+  const [showGroupModal, setShowGroupModal] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<FlowGroup | null>(null);
+
+  const selectedNodeIds = useMemo(
+    () => nodes.filter((node) => node.selected && !node.data.is_ghost).map((node) => node.id),
+    [nodes],
+  );
+
+  const modalNodes = useMemo<NodeConfig[]>(
+    () =>
+      nodes
+        .filter((node) => !node.data.is_ghost)
+        .map((node) => ({
+          node_id: node.data.node_id,
+          node_type: node.data.node_type,
+          label: node.data.label,
+          position: { x: node.position.x, y: node.position.y },
+          params: { ...node.data.params },
+          recipe_steps: node.data.recipe_steps ?? [],
+        })),
+    [nodes],
+  );
+
+  const modalEdges = useMemo(
+    () =>
+      edges.map((edge) => ({
+        edge_id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle ?? null,
+        targetHandle: edge.targetHandle ?? null,
+      })),
+    [edges],
+  );
+
+  const openCreateGroup = useCallback(() => {
+    setEditingGroup(null);
+    setShowGroupModal(true);
+  }, []);
+
+  const closeGroupModal = useCallback(() => {
+    setShowGroupModal(false);
+    setEditingGroup(null);
+  }, []);
 
   const clearClickTimer = useCallback(() => {
     if (clickTimer.current !== null) {
@@ -445,10 +498,21 @@ function FlowCanvasInner() {
 
   return (
     <div
-      className="h-full w-full bg-[var(--bg-canvas)]"
+      className="relative h-full w-full bg-[var(--bg-canvas)]"
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
+      {selectedNodeIds.length >= 2 && (
+        <button
+          type="button"
+          onClick={openCreateGroup}
+          title="Bungkus node terpilih menjadi Flow Group"
+          className="absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-[var(--border-radius)] border-[length:var(--border-width)] border-[var(--border-color)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-semibold text-[var(--text-main)] shadow-[var(--shadow-card)] hover:bg-[var(--bg-hover)]"
+        >
+          <Layers3 size={14} className="text-[var(--accent-primary)]" />
+          Buat Group ({selectedNodeIds.length})
+        </button>
+      )}
       <ReactFlow
         nodes={canvasNodes}
         edges={edges}
@@ -482,6 +546,22 @@ function FlowCanvasInner() {
           color="var(--border-color)"
         />
       </ReactFlow>
+
+      {showGroupModal && (
+        <FlowGroupModal
+          existingGroup={editingGroup}
+          projectKey={activeProjectKey}
+          allNodes={modalNodes}
+          allEdges={modalEdges}
+          selectedNodeIds={editingGroup?.node_ids ?? selectedNodeIds}
+          onClose={closeGroupModal}
+          onSaved={(group) => {
+            addToast('success', `Flow Group "${group.group_name}" disimpan.`);
+            closeGroupModal();
+          }}
+          onDeleted={() => addToast('info', 'Flow Group dihapus.')}
+        />
+      )}
     </div>
   );
 }

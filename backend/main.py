@@ -16,13 +16,13 @@ from backend.config import ensure_directories
 from backend.database import init_db
 from backend.engine.job_scheduler import shutdown_scheduler, start_scheduler
 from backend.routes import (
+    flow_group_router,
     gateway_router,
     lab_router,
     ml_router,
     production_router,
     system_router,
 )
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -69,6 +69,7 @@ app.include_router(system_router)
 app.include_router(lab_router)
 app.include_router(ml_router)
 app.include_router(production_router)
+app.include_router(flow_group_router)
 app.include_router(gateway_router)
 
 
@@ -77,6 +78,13 @@ def health_check() -> Dict[str, str]:
     """Primary application health probe."""
     return {"status": "ok", "app": "Dataiki", "version": "1.0.0"}
 
+## probing ada yang coba akses
+@app.middleware("http")
+async def log_probe(request: Request, call_next):
+    if request.url.path == "/health":
+        print("HEALTH PROBE:", request.client, request.headers.get("user-agent"),
+              request.headers.get("referer"), request.headers.get("origin"), flush=True)
+    return await call_next(request)
 
 if __name__ == "__main__":
     import uvicorn

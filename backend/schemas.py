@@ -358,3 +358,30 @@ class JanitorPurgeRequest(BaseModel):
     purge_orphaned_caches: bool = True
     purge_unpublished_models: bool = True
 
+
+# =====================================================================
+# 5. Flow Group Contracts
+# =====================================================================
+
+
+class FlowGroupCreate(BaseModel):
+    """Payload to create or update a named flow group (sub-DAG snapshot)."""
+
+    project_key: str
+    group_name: str
+    group_slug: str                          # URL-safe slug, e.g. "etl-harian"
+    description: str = ""
+    node_ids: List[str]                      # Node IDs included in this group
+    output_node_id: str                      # Node whose Parquet is the group output
+    input_node_id: Optional[str] = None      # Optional node to inject input_payload into
+    sub_dag: "PipelineDAG"                   # Snapshot of included nodes+edges
+    schedule_config: ScheduleConfig = Field(default_factory=ScheduleConfig)
+    is_api_enabled: bool = False
+
+
+class FlowGroupRunRequest(BaseModel):
+    """Payload for a manual run-once trigger or Production API call to a flow group."""
+
+    input_payload: Dict[str, Any] = Field(default_factory=dict)
+    output_format: Literal["json", "summary"] = "json"
+

@@ -388,3 +388,61 @@ export interface JanitorScanResult {
   unpublished_experiments: { size_mb: number; files: string[] };
   protected_production_assets: { size_mb: number; files: string[] };
 }
+
+// =====================================================================
+// Flow Groups
+// =====================================================================
+
+export type FlowGroupStatus = 'never_run' | 'running' | 'success' | 'error';
+
+export interface FlowGroup {
+  group_id: string;
+  project_key: string;
+  group_name: string;
+  group_slug: string;
+  description: string;
+  node_ids: string[];
+  output_node_id: string;
+  input_node_id?: string | null;
+  sub_dag: PipelineDAG;
+  schedule_config: ScheduleConfig;
+  is_api_enabled: boolean;
+  last_run_at?: string | null;
+  last_status: FlowGroupStatus;
+  last_error: string;
+  last_output_summary: string;
+  created_at?: string;
+}
+
+export interface FlowGroupCreate {
+  project_key: string;
+  group_name: string;
+  group_slug: string;
+  description: string;
+  node_ids: string[];
+  output_node_id: string;
+  input_node_id?: string | null;
+  sub_dag: PipelineDAG;
+  schedule_config: ScheduleConfig;
+  is_api_enabled: boolean;
+}
+
+export interface FlowGroupRunResult {
+  status: 'success' | 'error';
+  group_id: string;
+  group_name: string;
+  rows: number;
+  columns: number;
+  output_summary: string;
+  preview: Record<string, any>[];
+  error?: string;
+}
+
+export interface FlowGroupStatusResponse {
+  group_id: string;
+  group_name: string;
+  last_run_at?: string | null;
+  last_status: FlowGroupStatus;
+  last_error: string;
+  last_output_summary: string;
+}

@@ -321,7 +321,10 @@ def sync_apscheduler_jobs() -> None:
                     args=[sid],
                 )
 
+    # Flow-group jobs ('fg_...') are owned by sync_flow_group_schedules(); never prune them here.
     for job in scheduler.get_jobs():
+        if job.id.startswith("fg_"):
+            continue
         if job.id not in expected_ids:
             scheduler.remove_job(job.id)
 
@@ -331,10 +334,52 @@ def start_scheduler() -> None:
     if not scheduler.running:
         scheduler.start()
         sync_apscheduler_jobs()
+        sync_flow_group_schedules()
 
 
 def shutdown_scheduler() -> None:
     """Shutdown APScheduler background runner."""
     if scheduler.running:
         scheduler.shutdown(wait=False)
+
+
+def sync_flow_group_schedules() -> None:
+    """Sync all scheduled flow groups to APScheduler.
+
+    Flow group job IDs are prefixed with 'fg_' to avoid clashing with
+    batch job IDs (prefix 'bj_') and freestyle script IDs (prefix 'fs_').
+    """
+    from backend.engine.flow_group_runner import run_flow_group  # local import to avoid circular
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT group_id, schedule_config_json FROM flow_groups"
+        ).fetchall()
+
+    expected_ids: set[str] = set()
+
+    for row in rows:
+        gid = row["group_id"]
+        job_id = f"fg_{gid}"
+        try:
+            cfg = json.loads(row["schedule_config_json"] or "{}")
+        except Exception:
+            cfg = {}
+
+        trigger = _trigger_from_config(cfg)
+        if trigger:
+            expected_ids.add(job_id)
+            scheduler.add_job(
+                run_flow_group,
+                trigger=trigger,
+                id=job_id,
+                replace_existing=True,
+                args=[gid],
+                kwargs={"output_format": "summary"},
+            )
+
+    # Drop flow-group jobs whose schedule was disabled or whose group was deleted.
+    for job in scheduler.get_jobs():
+        if job.id.startswith("fg_") and job.id not in expected_ids:
+            scheduler.remove_job(job.id)
 

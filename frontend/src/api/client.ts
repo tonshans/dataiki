@@ -3,6 +3,10 @@ import type {
   ConnectionItem,
   CustomEndpointConfig,
   EdgeConfig,
+  FlowGroup,
+  FlowGroupCreate,
+  FlowGroupRunResult,
+  FlowGroupStatusResponse,
   FreestyleScriptItem,
   JanitorScanResult,
   MLSessionItem,
@@ -248,7 +252,7 @@ export function toBackendRecipeSteps(steps: RecipeStep[]): Array<Record<string, 
     is_train_only:
       step.action === 'augment_rows'
         ? step.params?.scope === 'train_only' ||
-          (step.train_only && step.params?.scope !== 'output_and_preview')
+        (step.train_only && step.params?.scope !== 'output_and_preview')
         : Boolean(step.train_only),
   }));
 }
@@ -1370,5 +1374,84 @@ export function updateFreestyleSchedule(
     method: 'PUT',
     body: jsonBody(scheduleToBackend(schedule)),
   });
+}
+
+// =====================================================================
+// Flow Groups
+// =====================================================================
+
+/** Backend stores schedule_config as {enabled, mode, value}; convert to UI shape. */
+function flowGroupFromBackend(raw: any): FlowGroup {
+  return {
+    ...(raw as FlowGroup),
+    schedule_config: scheduleFromBackend(raw?.schedule_config),
+  };
+}
+
+export function listFlowGroups(projectKey: string): Promise<FlowGroup[]> {
+  return apiRequest<any[]>(`/flow-groups/${segment(projectKey)}`).then((rows) =>
+    rows.map(flowGroupFromBackend),
+  );
+}
+
+export function createFlowGroup(payload: FlowGroupCreate): Promise<FlowGroup> {
+  return apiRequest<any>('/flow-groups', {
+    method: 'POST',
+    body: jsonBody({
+      project_key: payload.project_key,
+      group_name: payload.group_name,
+      group_slug: payload.group_slug,
+      description: payload.description,
+      node_ids: payload.node_ids,
+      output_node_id: payload.output_node_id,
+      input_node_id: payload.input_node_id ?? null,
+      sub_dag: payload.sub_dag,
+      schedule_config: scheduleToBackend(payload.schedule_config),
+      is_api_enabled: payload.is_api_enabled,
+    }),
+  }).then(flowGroupFromBackend);
+}
+
+export function updateFlowGroup(
+  groupId: string,
+  payload: FlowGroupCreate,
+): Promise<FlowGroup> {
+  return apiRequest<any>(`/flow-groups/${segment(groupId)}`, {
+    method: 'PUT',
+    body: jsonBody({
+      project_key: payload.project_key,
+      group_name: payload.group_name,
+      group_slug: payload.group_slug,
+      description: payload.description,
+      node_ids: payload.node_ids,
+      output_node_id: payload.output_node_id,
+      input_node_id: payload.input_node_id ?? null,
+      sub_dag: payload.sub_dag,
+      schedule_config: scheduleToBackend(payload.schedule_config),
+      is_api_enabled: payload.is_api_enabled,
+    }),
+  }).then(flowGroupFromBackend);
+}
+
+export function deleteFlowGroup(groupId: string): Promise<void> {
+  return apiRequest(`/flow-groups/${segment(groupId)}`, { method: 'DELETE' });
+}
+
+export function runFlowGroupNow(
+  groupId: string,
+  inputPayload?: Record<string, unknown>,
+  outputFormat: 'json' | 'summary' = 'json',
+): Promise<FlowGroupRunResult> {
+  return apiRequest(`/flow-groups/${segment(groupId)}/run`, {
+    method: 'POST',
+    body: jsonBody({
+      input_payload: inputPayload ?? {},
+      output_format: outputFormat,
+    }),
+  });
+}
+
+export function getFlowGroupStatus(groupId: string): Promise<FlowGroupStatusResponse> {
+  return apiRequest(`/flow-groups/${segment(groupId)}/status`);
 }
 

@@ -122,6 +122,26 @@ CREATE TABLE IF NOT EXISTS freestyle_scripts (
     last_output TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS flow_groups (
+    group_id TEXT PRIMARY KEY,
+    project_key TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    group_slug TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    node_ids_json TEXT NOT NULL DEFAULT '[]',
+    output_node_id TEXT NOT NULL,
+    input_node_id TEXT,
+    sub_dag_json TEXT NOT NULL DEFAULT '{}',
+    schedule_config_json TEXT DEFAULT '{}',
+    is_api_enabled INTEGER DEFAULT 0,
+    last_run_at TIMESTAMP,
+    last_status TEXT DEFAULT 'never_run',
+    last_error TEXT DEFAULT '',
+    last_output_summary TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(project_key, group_slug)
+);
 """
 
 
@@ -162,6 +182,31 @@ def init_db() -> None:
             "UPDATE model_versions SET model_name = project_key "
             "WHERE model_name IS NULL OR model_name = ''"
         )
+
+        # Auto-migration for flow_groups table
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='flow_groups'")
+        if not cursor.fetchone():
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS flow_groups (
+                    group_id TEXT PRIMARY KEY,
+                    project_key TEXT NOT NULL,
+                    group_name TEXT NOT NULL,
+                    group_slug TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    node_ids_json TEXT NOT NULL DEFAULT '[]',
+                    output_node_id TEXT NOT NULL,
+                    input_node_id TEXT,
+                    sub_dag_json TEXT NOT NULL DEFAULT '{}',
+                    schedule_config_json TEXT DEFAULT '{}',
+                    is_api_enabled INTEGER DEFAULT 0,
+                    last_run_at TIMESTAMP,
+                    last_status TEXT DEFAULT 'never_run',
+                    last_error TEXT DEFAULT '',
+                    last_output_summary TEXT DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(project_key, group_slug)
+                );
+            """)
 
 
 # Initialize database schema on load
