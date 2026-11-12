@@ -1,0 +1,207 @@
+# Dataiki Standalone Production Microservice
+
+- **Project:** `{{ project_key }}`
+- **Model Name:** `{{ model_name }}`
+- **Algorithm:** `{{ algorithm }}` (`{{ task_type }}`)
+- **Version:** `v{{ version }}`
+- **Target Output Column:** `{{ target_column }}` *(dihasilkan oleh model — **tidak** perlu dimasukkan ke data input)*
+
+---
+
+## Zero Vendor Lock-in Architecture
+
+Paket ini sepenuhnya mandiri (*standalone*) dan berjalan tanpa server Dataiki. Di dalamnya sudah termasuk:
+
+- `bundle.joblib` — Model terlatih, preprocessor/transformer, `label_encoder` (jika ada), dan metadata lineage.
+- `dataiki_recipe.py` — Engine replay recipe & validasi fail-fast Dataiki.
+- `standalone_api.py` — REST API microservice berbasis FastAPI (`GET /health`, `GET /model_info`, `POST /predict`{% if supports_predict_proba %}, `POST /predict_proba`{% endif %}).
+- `standalone_batch.py` — Script batch scoring CLI (`.csv`, `.txt`, `.parquet`, `.xlsx`, `.xls`) & modul Python (`predict_dataframe`).
+- `Dockerfile` & `requirements.txt` — Container & dependensi Python yang di-pin ketat.
+
+---
+
+## 1. Spesifikasi Kolom Mentah (Raw Input Schema)
+
+Kedua script (`standalone_api.py` dan `standalone_batch.py`) menjalankan `replay_frozen_lineage(..., fail_fast_mode=True)` sebelum memprediksi. Oleh karena itu, **data input wajib menyediakan kolom mentah** di bawah ini (bukan hanya kolom hasil transformasi akhir):
+
+{% if raw_columns %}
+| No | Nama Kolom Mentah | Tipe Data | Contoh Nilai | Keterangan / Aturan Validasi |
+|---:|-------------------|-----------|--------------|------------------------------|
+{% for col in raw_columns %}| {{ loop.index }} | `{{ col.name }}` | `{{ col.dtype }}` | `{{ col.example_repr }}` | {{ col.notes }} |
+{% endfor %}
+{% else %}
+*(Tidak ada kolom fitur yang terdeteksi di metadata model.)*
+{% endif %}
+
+> **Catatan Penting:**
+> - Node **ingestion** dan **join** tidak dijalankan ulang oleh paket standalone — pastikan data input Anda sudah berupa tabel gabungan yang memuat kolom mentah di atas.
+> - Kolom target `{{ target_column }}` **tidak diperlukan** pada input saat inference/prediksi.
+{% if py_transform_nodes %}> - **Python Transform Terdeteksi:** Lineage model ini memuat node Python Transform ({% for p in py_transform_nodes %}`{{ p }}`{% if not loop.last %}, {% endif %}{% endfor %}). Script transformasi tersebut dijalankan otomatis sebelum prediksi; pastikan seluruh kolom mentah yang direferensikan di dalam kode Python transform tersedia pada data input.
+{% endif %}
+{% if has_recipes %}
+### Fitur Akhir Model (`feature_columns`) Setelah Replay Recipe
+Setelah seluruh langkah recipe/transform dijalankan, model akan memilih **{{ feature_columns | length }} fitur** berikut untuk masuk ke preprocessor & estimator:
+{{ feature_columns_inline }}
+{% endif %}
+
+---
+
+## 2. Cara Menjalankan Service
+
+### Opsi A: Menggunakan Docker (Direkomendasikan)
+```bash
+docker build -t {{ docker_tag }} .
+docker run -p 8000:8000 {{ docker_tag }}
+```
+
+### Opsi B: Menggunakan Python Virtualenv Lokal
+```bash
+python -m venv .venv
+source .venv/bin/activate  # atau .venv\Scripts\activate di Windows
+pip install -r requirements.txt
+python standalone_api.py
+```
+
+Setelah berjalan, dokumentasi interaktif Swagger UI tersedia di `http://localhost:8000/docs`.
+
+---
+
+## 3. Panduan Input & Output `standalone_api.py` (REST API)
+
+### Endpoint Tersedia
+- `GET /health` — Health check container.
+- `GET /model_info` — Metadata model, daftar `feature_columns`, metrik evaluasi, dan hyperparameter.
+- `POST /predict` — Prediksi nilai/kelas target untuk 1 record atau banyak record sekaligus.
+{% if supports_predict_proba %}- `POST /predict_proba` — Probabilitas tiap kelas untuk 1 record atau banyak record sekaligus.
+{% endif %}
+
+### Cara Memberikan Input ke `standalone_api.py`
+
+Payload dikirim via HTTP `POST` dengan `Content-Type: application/json` dalam format:
+- **Single record (1 data):** `{"records": { ... }}`
+- **Batch records (banyak data):** `{"records": [ { ... }, { ... } ]}`
+
+#### Contoh `curl` — Single Record (`POST /predict`)
+```bash
+curl -X POST "http://localhost:8000/predict" \
+  -H "Content-Type: application/json" \
+  -d '{{ single_payload_json }}'
+```
+
+#### Contoh `curl` — Batch Records (`POST /predict`)
+```bash
+curl -X POST "http://localhost:8000/predict" \
+  -H "Content-Type: application/json" \
+  -d '{{ batch_payload_json }}'
+```
+
+#### Contoh Python (`httpx` / `requests`)
+```python
+import httpx
+
+payload = {{ single_payload_python }}
+
+resp = httpx.post("http://localhost:8000/predict", json=payload, timeout=30.0)
+resp.raise_for_status()
+print(resp.json())
+{% if supports_predict_proba %}
+# Untuk mendapatkan probabilitas kelas:
+proba_resp = httpx.post("http://localhost:8000/predict_proba", json=payload, timeout=30.0)
+proba_resp.raise_for_status()
+print(proba_resp.json())
+{% endif %}
+```
+
+### Output yang Dihasilkan `standalone_api.py`
+
+1. **Output `POST /predict` (Single Record):**
+   Mengembalikan objek JSON dengan key `target_column` dan `predictions` berupa **nilai tunggal** (bukan list):
+```json
+{{ single_predict_output_json }}
+```
+
+2. **Output `POST /predict` (Batch Records):**
+   Jika `records` dikirim sebagai JSON array/list, maka `predictions` berupa **list** berurutan sesuai input:
+```json
+{{ batch_predict_output_json }}
+```
+{% if supports_predict_proba %}
+3. **Output `POST /predict_proba`:**
+   Mengembalikan probabilitas untuk setiap kelas{% if class_labels %} dengan urutan kelas: `{{ class_labels_str }}`{% endif %}:
+   - **Single record:**
+```json
+{{ single_proba_output_json }}
+```
+   - **Batch records:**
+```json
+{{ batch_proba_output_json }}
+```
+{% endif %}
+4. **Output `GET /model_info`:**
+```json
+{
+  "project_key": "{{ project_key }}",
+  "version": {{ version }},
+  "task_type": "{{ task_type }}",
+  "algorithm": "{{ algorithm }}",
+  "target_column": "{{ target_column }}",
+  "feature_columns": {{ feature_columns_json }},
+  "metrics": { ... },
+  "hyperparameters": { ... }
+}
+```
+
+5. **Output Error Validasi (`HTTP 422 Unprocessable Entity`):**
+   Terjadi jika `records` kosong, ada kolom fitur/mentah yang kurang, tipe data gagal di-cast oleh recipe, atau ada record yang tertolak oleh aturan `filter_row` (fail-fast):
+```json
+{
+  "detail": "Missing required feature columns: ['...']"
+}
+```
+
+---
+
+## 4. Panduan Input & Output `standalone_batch.py` (Batch CLI & Python)
+
+### Cara Memberikan Input ke `standalone_batch.py`
+
+Script mendukung format input **`.csv`**, **`.txt`**, **`.parquet`**, **`.xlsx`**, dan **`.xls`**. File input harus memiliki header kolom sesuai tabel **Kolom Mentah** di Bagian 1.
+
+#### Contoh Isi File Input (`input_data.csv`)
+```csv
+{{ batch_input_csv }}
+```
+
+#### Contoh Menjalankan via CLI
+```bash
+# Input & output CSV
+python standalone_batch.py --input input_data.csv --output scored_output.csv
+
+# Input Excel -> Output Parquet
+python standalone_batch.py -i input_data.xlsx -o scored_output.parquet
+```
+
+#### Contoh Pemanggilan dari Python / Jupyter Notebook
+```python
+import polars as pl
+from standalone_batch import predict_dataframe
+
+raw_df = pl.read_csv("input_data.csv")
+scored_df = predict_dataframe(raw_df)
+print(scored_df)
+```
+
+### Output yang Dihasilkan `standalone_batch.py`
+
+Script akan menulis file ke path `--output` (mendukung `.parquet`, `.csv`, `.txt`, `.xlsx`, `.xls`; selain ekstensi tersebut otomatis ditulis sebagai CSV).
+
+Tabel output berisi **seluruh kolom hasil replay recipe/transform** ditambah kolom prediksi berikut:
+- `prediction_{{ target_column }}` — Hasil prediksi model{% if class_labels %} (sudah di-decode kembali ke label asli: `{{ class_labels_str }}`){% endif %}.
+{% if is_binary_proba %}- `probability_{{ target_column }}` — Probabilitas kelas positif (`probas[:, 1]`, rentang `0.0` – `1.0`).
+{% endif %}
+
+#### Contoh Isi Output (`scored_output.csv`)
+```csv
+{{ batch_output_csv }}
+```
+
