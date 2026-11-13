@@ -12,7 +12,7 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from backend.config import ARTIFACTS_DIR, CACHE_DIR
 from backend.database import get_db

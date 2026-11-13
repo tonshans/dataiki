@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict
 
@@ -31,34 +32,40 @@ def write_dataframe_to_db_sink(
     mode: str = "append",
 ) -> None:
     """Insert DataFrame records into a destination database table."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(table_name)):
+        raise ValueError(f"Invalid destination table name: '{table_name}'")
+
     conn_info = get_writable_connection(conn_id)
     engine = create_engine(conn_info["connection_uri"])
-    records = df.to_dicts()
-    if not records:
-        return
+    try:
+        records = df.to_dicts()
+        if not records:
+            return
 
-    cols = df.columns
-    col_str = ", ".join([f'"{c}"' for c in cols])
-    param_str = ", ".join([f":{c}" for c in cols])
+        cols = df.columns
+        col_str = ", ".join([f'"{c}"' for c in cols])
+        param_str = ", ".join([f":{c}" for c in cols])
 
-    with engine.begin() as conn:
-        if mode.lower() == "replace":
-            conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
-            type_map = {
-                pl.Int64: "BIGINT",
-                pl.Int32: "INTEGER",
-                pl.Float64: "FLOAT",
-                pl.Float32: "FLOAT",
-                pl.Boolean: "BOOLEAN",
-                pl.Utf8: "TEXT",
-                pl.Date: "DATE",
-                pl.Datetime: "TIMESTAMP",
-            }
-            col_defs = [f'"{c}" {type_map.get(df[c].dtype, "TEXT")}' for c in cols]
-            conn.execute(text(f'CREATE TABLE "{table_name}" ({", ".join(col_defs)})'))
+        with engine.begin() as conn:
+            if mode.lower() == "replace":
+                conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
+                type_map = {
+                    pl.Int64: "BIGINT",
+                    pl.Int32: "INTEGER",
+                    pl.Float64: "FLOAT",
+                    pl.Float32: "FLOAT",
+                    pl.Boolean: "BOOLEAN",
+                    pl.Utf8: "TEXT",
+                    pl.Date: "DATE",
+                    pl.Datetime: "TIMESTAMP",
+                }
+                col_defs = [f'"{c}" {type_map.get(df[c].dtype, "TEXT")}' for c in cols]
+                conn.execute(text(f'CREATE TABLE "{table_name}" ({", ".join(col_defs)})'))
 
-        insert_stmt = text(f'INSERT INTO "{table_name}" ({col_str}) VALUES ({param_str})')
-        conn.execute(insert_stmt, records)
+            insert_stmt = text(f'INSERT INTO "{table_name}" ({col_str}) VALUES ({param_str})')
+            conn.execute(insert_stmt, records)
+    finally:
+        engine.dispose()
 
 
 def write_dataframe_to_file_sink(

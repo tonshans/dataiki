@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import duckdb
 import httpx
 import polars as pl
 from sqlalchemy import create_engine

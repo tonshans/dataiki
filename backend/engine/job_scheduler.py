@@ -18,9 +18,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import duckdb
 import httpx
-import numpy as np
 import polars as pl
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -32,6 +30,7 @@ from backend.config import ALLOW_FREESTYLE, UPLOADS_DIR
 from backend.database import get_db
 from backend.engine.ingestion import _ingest_from_file, _ingest_from_rest_api
 from backend.engine.runtime_sdk import DataikiRuntimeSDK
+from backend.engine.sandbox import load_sandboxed_function
 from backend.engine.script_runner import run_freestyle_script
 from backend.engine.sink_writer import write_dataframe_to_db_sink
 from backend.engine.vault import get_connection_wrapper
@@ -108,18 +107,7 @@ def run_batch_job(batch_job_id: str) -> Dict[str, Any]:
         # GERBONG 2: Pre-Mapper Script
         # =================================================================
         if pre_mapper_code:
-            ns: Dict[str, Any] = {
-                "pl": pl,
-                "np": np,
-                "json": json,
-                "duckdb": duckdb,
-                "__builtins__": __builtins__,
-            }
-            loc: Dict[str, Any] = {}
-            exec(pre_mapper_code, ns, loc)
-            pre_map_fn = loc.get("pre_map") or ns.get("pre_map")
-            if not callable(pre_map_fn):
-                raise ValueError("Pre-mapper script must define 'def pre_map(df: pl.DataFrame) -> pl.DataFrame:'")
+            pre_map_fn = load_sandboxed_function(pre_mapper_code, "pre_map")
             mapped_df = pre_map_fn(raw_df)
             if not isinstance(mapped_df, pl.DataFrame):
                 raise TypeError("pre_map() must return a Polars DataFrame.")
@@ -151,21 +139,11 @@ def run_batch_job(batch_job_id: str) -> Dict[str, Any]:
         # GERBONG 4: Post-Calculator Script
         # =================================================================
         if post_calc_code:
-            ns_post: Dict[str, Any] = {
-                "dataiki": sdk,
-                "pl": pl,
-                "np": np,
-                "json": json,
-                "duckdb": duckdb,
-                "__builtins__": __builtins__,
-            }
-            loc_post: Dict[str, Any] = {}
-            exec(post_calc_code, ns_post, loc_post)
-            post_calc_fn = loc_post.get("post_calc") or ns_post.get("post_calc")
-            if not callable(post_calc_fn):
-                raise ValueError(
-                    "Post-calculator script must define 'def post_calc(pred_df, raw_df, dataiki) -> pl.DataFrame:'"
-                )
+            post_calc_fn = load_sandboxed_function(
+                post_calc_code,
+                "post_calc",
+                extra_globals={"dataiki": sdk},
+            )
             final_df = post_calc_fn(pred_df, raw_df, sdk)
             if not isinstance(final_df, pl.DataFrame):
                 raise TypeError("post_calc() must return a Polars DataFrame.")

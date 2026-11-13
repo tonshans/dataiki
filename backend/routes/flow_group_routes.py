@@ -24,7 +24,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, HTTPException, status
 
 from backend.config import CACHE_DIR
-from backend.database import get_db
+from backend.database import get_db, unpack_row_json
 from backend.engine.flow_group_runner import run_flow_group
 from backend.engine.job_scheduler import sync_flow_group_schedules
 from backend.schemas import FlowGroupCreate, FlowGroupRunRequest
@@ -86,14 +86,15 @@ def _validate_group_payload(payload: FlowGroupCreate) -> None:
 
 def _row_to_dict(row: Any) -> Dict[str, Any]:
     """Convert a sqlite3.Row from flow_groups to a serializable dict."""
-    d = dict(row)
-    for json_key in ("node_ids_json", "sub_dag_json", "schedule_config_json"):
-        try:
-            raw = d.pop(json_key, None)
-            field = json_key.replace("_json", "")
-            d[field] = json.loads(raw or "null") or ([] if "node_ids" in field else {})
-        except Exception:
-            d[json_key.replace("_json", "")] = {} if "sub_dag" in json_key or "schedule" in json_key else []
+    d = unpack_row_json(
+        row,
+        {
+            "node_ids_json": ("node_ids", []),
+            "sub_dag_json": ("sub_dag", {}),
+            "schedule_config_json": ("schedule_config", {}),
+        },
+        pop_source=True,
+    )
     d["is_api_enabled"] = bool(d.get("is_api_enabled", 0))
     return d
 

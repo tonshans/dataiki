@@ -10,21 +10,19 @@ Provides high-performance production inference primitives:
 from __future__ import annotations
 
 import inspect
-import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
-import duckdb
 import joblib
 import numpy as np
 import polars as pl
 
 from backend.config import ARTIFACTS_DIR, CACHE_DIR
 from backend.database import get_db
-from backend.engine.recipe_engine import RecipeValidationError, apply_recipe_steps
+from backend.engine.recipe_engine import RecipeValidationError, replay_frozen_lineage
+from backend.engine.sandbox import load_sandboxed_function
 from backend.engine.vault import DatabaseConnectionWrapper, get_connection_wrapper
-from backend.schemas import RecipeStep
 
 
 @lru_cache(maxsize=10)
@@ -45,10 +43,9 @@ class PublishedModelWrapper:
     """Wrapper around a frozen production model version.
 
     Executes the exact frozen pipeline in order:
-    1. Input validation & recipe steps with fail_fast_mode=True (HTTP 422 trigger).
-    2. Frozen Python transforms (if present).
-    3. Frozen ColumnTransformer preprocessing.
-    4. Estimator prediction or probability inference.
+    1. Frozen lineage replay (recipe steps + Python transforms, fail_fast_mode=True).
+    2. Frozen ColumnTransformer preprocessing.
+    3. Estimator prediction or probability inference.
     """
 
     def __init__(
@@ -117,51 +114,11 @@ class PublishedModelWrapper:
                 f"Unsupported data type for inference: {type(data).__name__}. Expected dict, list, or pl.DataFrame."
             )
 
-        # 1. Execute frozen recipe steps with fail_fast_mode=True
-        recipe_steps_raw = self.frozen_lineage.get("recipe_steps", [])
-        if recipe_steps_raw:
-            steps = [
-                RecipeStep.model_validate(s) if isinstance(s, dict) else s
-                for s in recipe_steps_raw
-            ]
-            df, _ = apply_recipe_steps(
-                df=df,
-                steps=steps,
-                include_train_only=False,  # strictly bypassed in production inference
-                fail_fast_mode=True,       # raises RecipeValidationError on rejected rows
-            )
+        # 1. Replay frozen lineage (recipe steps + python transforms) in the same
+        # order as the Live Gateway; fail_fast_mode=True raises on rejected rows.
+        df = replay_frozen_lineage(df, self.frozen_lineage, fail_fast_mode=True)
 
-        # 2. Execute frozen Python transform scripts (if any)
-        python_scripts = self.frozen_lineage.get("python_scripts", [])
-        for script_item in python_scripts:
-            code = script_item.get("code", "")
-            if code.strip():
-                ns: Dict[str, Any] = {
-                    "pl": pl,
-                    "np": np,
-                    "duckdb": duckdb,
-                    "__builtins__": {
-                        # Whitelist: safe built-ins only. No open/os/eval/exec.
-                        "len": len, "range": range, "enumerate": enumerate,
-                        "zip": zip, "map": map, "filter": filter,
-                        "list": list, "dict": dict, "set": set, "tuple": tuple,
-                        "str": str, "int": int, "float": float, "bool": bool,
-                        "min": min, "max": max, "sum": sum, "abs": abs,
-                        "round": round, "sorted": sorted, "reversed": reversed,
-                        "isinstance": isinstance, "issubclass": issubclass,
-                        "hasattr": hasattr, "getattr": getattr,
-                        "print": print, "repr": repr, "type": type,
-                        "ValueError": ValueError, "TypeError": TypeError,
-                        "KeyError": KeyError, "Exception": Exception,
-                    },
-                }
-                local_scope: Dict[str, Any] = {}
-                exec(code, ns, local_scope)
-                transform_fn = local_scope.get("transform") or ns.get("transform")
-                if callable(transform_fn):
-                    df = transform_fn(df)
-
-        # 3. Ensure all feature columns exist
+        # 2. Ensure all feature columns exist
         missing_cols = [c for c in self.feature_columns if c not in df.columns]
         if missing_cols:
             raise RecipeValidationError(
@@ -170,7 +127,7 @@ class PublishedModelWrapper:
                 message=f"Missing required feature columns: {missing_cols}",
             )
 
-        # 4. Transform features using pre-fitted ColumnTransformer
+        # 3. Transform features using pre-fitted ColumnTransformer
         X_raw = df.select(self.feature_columns).to_numpy()
         X_trans = self.transformer.transform(X_raw)
         return X_trans
@@ -378,37 +335,11 @@ def execute_custom_endpoint_script(
 
     sdk_instance = DataikiRuntimeSDK(project_key)
 
-    # Sandbox namespace — whitelist safe built-ins; block open/os/eval/exec/import
-    _safe_builtins = {
-        "len": len, "range": range, "enumerate": enumerate,
-        "zip": zip, "map": map, "filter": filter,
-        "list": list, "dict": dict, "set": set, "tuple": tuple,
-        "str": str, "int": int, "float": float, "bool": bool,
-        "min": min, "max": max, "sum": sum, "abs": abs,
-        "round": round, "sorted": sorted, "reversed": reversed,
-        "isinstance": isinstance, "issubclass": issubclass,
-        "hasattr": hasattr, "getattr": getattr,
-        "print": print, "repr": repr, "type": type,
-        "ValueError": ValueError, "TypeError": TypeError,
-        "KeyError": KeyError, "Exception": Exception,
-    }
-    sandbox_globals: Dict[str, Any] = {
-        "dataiki": sdk_instance,
-        "pl": pl,
-        "np": np,
-        "json": json,
-        "duckdb": duckdb,
-        "__builtins__": _safe_builtins,
-    }
-    sandbox_locals: Dict[str, Any] = {}
-
-    exec(script_text, sandbox_globals, sandbox_locals)
-
-    handler_fn = sandbox_locals.get(handler_name) or sandbox_globals.get(handler_name)
-    if not callable(handler_fn):
-        raise ValueError(
-            f"Endpoint script does not define handler function '{handler_name}'."
-        )
+    handler_fn = load_sandboxed_function(
+        script_text,
+        handler_name,
+        extra_globals={"dataiki": sdk_instance},
+    )
 
     # Pass payload_or_query if handler accepts argument
     sig = inspect.signature(handler_fn)

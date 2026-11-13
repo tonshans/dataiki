@@ -9,15 +9,84 @@ Executes sequential wrangling cards on Polars DataFrames with support for:
 
 from __future__ import annotations
 
+import json
 import math
-import os
 import re
-import tempfile
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import duckdb
 import numpy as np
 import polars as pl
+
+try:
+    from backend.engine.sandbox import SAFE_BUILTINS, load_sandboxed_function
+except ImportError:
+    # Standalone ZIP export: this file ships as dataiki_recipe.py with no
+    # backend package, so the sandbox must carry its own copy.
+    SAFE_BUILTINS: Dict[str, Any] = {
+        "len": len,
+        "range": range,
+        "enumerate": enumerate,
+        "zip": zip,
+        "map": map,
+        "filter": filter,
+        "list": list,
+        "dict": dict,
+        "set": set,
+        "tuple": tuple,
+        "str": str,
+        "int": int,
+        "float": float,
+        "bool": bool,
+        "min": min,
+        "max": max,
+        "sum": sum,
+        "abs": abs,
+        "round": round,
+        "sorted": sorted,
+        "reversed": reversed,
+        "isinstance": isinstance,
+        "issubclass": issubclass,
+        "hasattr": hasattr,
+        "getattr": getattr,
+        "print": print,
+        "repr": repr,
+        "type": type,
+        "any": any,
+        "all": all,
+        "ValueError": ValueError,
+        "TypeError": TypeError,
+        "KeyError": KeyError,
+        "Exception": Exception,
+    }
+
+    def load_sandboxed_function(
+        code: str,
+        func_name: str,
+        extra_globals: Optional[Dict[str, Any]] = None,
+    ) -> Callable:
+        """Inline twin of backend.engine.sandbox.load_sandboxed_function."""
+        sandbox_globals: Dict[str, Any] = {
+            "pl": pl,
+            "np": np,
+            "duckdb": duckdb,
+            "json": json,
+        }
+        if extra_globals:
+            sandbox_globals.update(extra_globals)
+        # Always last: extra_globals must never widen the built-in whitelist.
+        sandbox_globals["__builtins__"] = SAFE_BUILTINS
+
+        sandbox_locals: Dict[str, Any] = {}
+        exec(code, sandbox_globals, sandbox_locals)
+
+        fn = sandbox_locals.get(func_name) or sandbox_globals.get(func_name)
+        if not callable(fn):
+            raise ValueError(
+                f"Script does not define callable function '{func_name}'."
+            )
+        return fn
+
 
 if TYPE_CHECKING:
     from backend.schemas import RecipeStep
@@ -489,25 +558,14 @@ def apply_recipe_steps(
                     raise RecipeValidationError(_step_get(step, "label", ""), message=msg)
                 raise ValueError(msg)
 
-            # Execute SQL formula expression via DuckDB + temp Parquet
-            # (avoids pyarrow dependency; con.close() guaranteed by try/finally)
-            fd, tmp_name = tempfile.mkstemp(suffix=".parquet")
-            os.close(fd)
-            tmp_path = tmp_name
             con = duckdb.connect()
             try:
-                current_df.write_parquet(tmp_path)
+                con.register("df_view", current_df)
                 if overwrite:
                     select_expr = f'* REPLACE (({formula}) AS "{new_col}")'
                 else:
                     select_expr = f'*, ({formula}) AS "{new_col}"'
-                safe_tmp = tmp_path.replace("'", "''")
-                rel = con.execute(
-                    f"SELECT {select_expr} FROM read_parquet('{safe_tmp}')"
-                )
-                col_names = [d[0] for d in rel.description]
-                rows = rel.fetchall()
-                current_df = pl.DataFrame([dict(zip(col_names, r)) for r in rows])
+                current_df = con.execute(f"SELECT {select_expr} FROM df_view").pl()
                 modified_columns.append(new_col)
             except Exception as exc:
                 if fail_fast_mode:
@@ -515,8 +573,6 @@ def apply_recipe_steps(
                 raise ValueError(f"Failed to evaluate formula '{formula}': {exc}") from exc
             finally:
                 con.close()
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
 
         # 7. split_text
         elif op == "split_text":
@@ -827,7 +883,26 @@ def replay_frozen_lineage(
 ) -> pl.DataFrame:
     """Replay frozen DAG recipe + python-transform nodes on incoming raw records."""
     current = df
-    for node in lineage.get("lineage_nodes") or []:
+    lineage_nodes = lineage.get("lineage_nodes") or []
+
+    # Legacy bundle format: flat recipe_steps + python_scripts, no lineage_nodes.
+    if not lineage_nodes:
+        legacy_steps = lineage.get("recipe_steps") or []
+        if legacy_steps:
+            current, _ = apply_recipe_steps(
+                df=current,
+                steps=legacy_steps,
+                include_train_only=False,
+                fail_fast_mode=fail_fast_mode,
+            )
+        for script_item in lineage.get("python_scripts") or []:
+            code_text = str((script_item or {}).get("code") or "")
+            if not code_text.strip():
+                continue
+            current = load_sandboxed_function(code_text, "transform")(current)
+        return current
+
+    for node in lineage_nodes:
         node_type = node.get("node_type")
         params = node.get("params") or {}
 
@@ -845,16 +920,7 @@ def replay_frozen_lineage(
             code_text = str(params.get("code") or "")
             if not code_text.strip():
                 continue
-            sandbox: Dict[str, Any] = {
-                "pl": pl,
-                "np": np,
-                "duckdb": duckdb,
-                "__builtins__": __builtins__,
-            }
-            exec(code_text, sandbox, sandbox)
-            transform_fn = sandbox.get("transform")
-            if callable(transform_fn):
-                current = transform_fn(current)
+            current = load_sandboxed_function(code_text, "transform")(current)
 
     return current
 

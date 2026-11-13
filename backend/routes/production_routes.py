@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import FileResponse
 
 from backend.config import ALLOW_FREESTYLE
-from backend.database import get_db
+from backend.database import get_db, unpack_row_json
 from backend.engine.exporter import export_standalone_zip
 from backend.engine.job_scheduler import run_batch_job, sync_apscheduler_jobs
 from backend.engine.ml_tuner import promote_to_production, retrain_published_model
@@ -54,28 +54,19 @@ def list_project_models(project_key: str) -> List[Dict[str, Any]]:
             (project_key,),
         ).fetchall()
 
-    results: List[Dict[str, Any]] = []
-    for r in rows:
-        d = dict(r)
-        try:
-            d["metrics"] = json.loads(d.get("metrics_json") or "{}")
-        except Exception:
-            d["metrics"] = {}
-        try:
-            d["hyperparameters"] = json.loads(d.get("hyperparameters_json") or "{}")
-        except Exception:
-            d["hyperparameters"] = {}
-        try:
-            d["feature_columns"] = json.loads(d.get("feature_columns_json") or "[]")
-        except Exception:
-            d["feature_columns"] = []
-        try:
-            d["input_schema"] = json.loads(d.get("input_schema_json") or "{}")
-        except Exception:
-            d["input_schema"] = {}
-        results.append(d)
-
-    return results
+    return [
+        unpack_row_json(
+            r,
+            {
+                "metrics_json": ("metrics", {}),
+                "hyperparameters_json": ("hyperparameters", {}),
+                "feature_columns_json": ("feature_columns", []),
+                "input_schema_json": ("input_schema", {}),
+            },
+            pop_source=False,
+        )
+        for r in rows
+    ]
 
 
 @router.post("/models/promote", status_code=status.HTTP_201_CREATED)
@@ -385,24 +376,18 @@ def list_batch_jobs(project_key: str) -> List[Dict[str, Any]]:
             (project_key,),
         ).fetchall()
 
-    results: List[Dict[str, Any]] = []
-    for r in rows:
-        d = dict(r)
-        try:
-            d["source_config"] = json.loads(d.get("source_config_json") or "{}")
-        except Exception:
-            d["source_config"] = {}
-        try:
-            d["sink_config"] = json.loads(d.get("sink_config_json") or "{}")
-        except Exception:
-            d["sink_config"] = {}
-        try:
-            d["schedule_config"] = json.loads(d.get("schedule_config_json") or "{}")
-        except Exception:
-            d["schedule_config"] = {}
-        results.append(d)
-
-    return results
+    return [
+        unpack_row_json(
+            r,
+            {
+                "source_config_json": ("source_config", {}),
+                "sink_config_json": ("sink_config", {}),
+                "schedule_config_json": ("schedule_config", {}),
+            },
+            pop_source=False,
+        )
+        for r in rows
+    ]
 
 
 @router.get("/jobs/detail/{batch_job_id}")
@@ -413,11 +398,15 @@ def get_batch_job(batch_job_id: str) -> Dict[str, Any]:
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Batch job '{batch_job_id}' not found.")
 
-    d = dict(row)
-    d["source_config"] = json.loads(d.get("source_config_json") or "{}")
-    d["sink_config"] = json.loads(d.get("sink_config_json") or "{}")
-    d["schedule_config"] = json.loads(d.get("schedule_config_json") or "{}")
-    return d
+    return unpack_row_json(
+        row,
+        {
+            "source_config_json": ("source_config", {}),
+            "sink_config_json": ("sink_config", {}),
+            "schedule_config_json": ("schedule_config", {}),
+        },
+        pop_source=False,
+    )
 
 
 @router.delete("/jobs/{batch_job_id}")
@@ -472,12 +461,11 @@ def _ensure_freestyle_enabled() -> None:
 
 
 def _script_row_to_dict(row: Any) -> Dict[str, Any]:
-    data = dict(row)
-    try:
-        data["schedule_config"] = json.loads(data.get("schedule_config_json") or "{}")
-    except Exception:
-        data["schedule_config"] = {}
-    return data
+    return unpack_row_json(
+        row,
+        {"schedule_config_json": ("schedule_config", {})},
+        pop_source=False,
+    )
 
 
 @router.post("/scripts/run")

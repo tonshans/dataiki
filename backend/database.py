@@ -1,8 +1,9 @@
 """SQLite registry database connection manager and table initialization."""
 
+import json
 import sqlite3
 from contextlib import contextmanager
-from typing import Generator
+from typing import Any, Dict, Generator, Tuple
 
 from backend.config import DB_PATH, ensure_directories
 
@@ -161,6 +162,34 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
         raise
     finally:
         conn.close()
+
+
+def parse_json_safe(raw: Any, default: Any) -> Any:
+    """Safely parse a JSON string or return default on failure/empty."""
+    if raw is None or raw == "":
+        return default
+    if isinstance(raw, (dict, list)):
+        return raw
+    try:
+        parsed = json.loads(raw)
+        return parsed if parsed is not None else default
+    except Exception:
+        return default
+
+
+def unpack_row_json(
+    row: Any,
+    mapping: Dict[str, Tuple[str, Any]],
+    pop_source: bool = False,
+) -> Dict[str, Any]:
+    """Convert sqlite3.Row to dict and deserialize specified JSON columns.
+    mapping format: {"source_json_col": ("target_key", default_value)}
+    """
+    d = dict(row)
+    for src_col, (target_key, default_val) in mapping.items():
+        raw_val = d.pop(src_col, None) if pop_source else d.get(src_col)
+        d[target_key] = parse_json_safe(raw_val, default_val)
+    return d
 
 
 def init_db() -> None:

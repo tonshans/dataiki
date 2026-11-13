@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import duckdb
-import numpy as np
 import polars as pl
 
 from backend.config import CACHE_DIR
@@ -24,6 +23,7 @@ from backend.database import get_db
 from backend.engine.ingestion import ingest_to_parquet
 from backend.engine.recipe_engine import apply_recipe_steps
 from backend.engine.runtime_sdk import DataikiRuntimeSDK
+from backend.engine.sandbox import load_sandboxed_function
 from backend.engine.sink_writer import (
     get_writable_connection,
     write_dataframe_to_db_sink,
@@ -280,21 +280,7 @@ def _execute_py_transform_node(
         raise ValueError(f"Python transform node '{node.node_id}' has empty code.")
 
     # Sandbox execution namespace
-    sandbox_globals: Dict[str, Any] = {
-        "pl": pl,
-        "np": np,
-        "duckdb": duckdb,
-        "__builtins__": __builtins__,
-    }
-    sandbox_locals: Dict[str, Any] = {}
-
-    exec(code_text, sandbox_globals, sandbox_locals)
-
-    transform_fn = sandbox_locals.get("transform") or sandbox_globals.get("transform")
-    if not callable(transform_fn):
-        raise ValueError(
-            f"Python transform node '{node.node_id}' must define 'def transform(df: pl.DataFrame) -> pl.DataFrame:'"
-        )
+    transform_fn = load_sandboxed_function(code_text, "transform")
 
     res_df = transform_fn(df)
     if not isinstance(res_df, pl.DataFrame):
@@ -350,22 +336,11 @@ def _execute_prediction_node(
     if not code_text:
         result_df = pred_df
     else:
-        sandbox_globals: Dict[str, Any] = {
-            "pl": pl,
-            "np": np,
-            "duckdb": duckdb,
-            "dataiki": sdk,
-            "__builtins__": __builtins__,
-        }
-        sandbox_locals: Dict[str, Any] = {}
-        exec(code_text, sandbox_globals, sandbox_locals)
-
-        post_calc_fn = sandbox_locals.get("post_calc") or sandbox_globals.get("post_calc")
-        if not callable(post_calc_fn):
-            raise ValueError(
-                f"Prediction node '{node.node_id}' must define "
-                "'def post_calc(pred_df, raw_df, dataiki) -> pl.DataFrame:'"
-            )
+        post_calc_fn = load_sandboxed_function(
+            code_text,
+            "post_calc",
+            extra_globals={"dataiki": sdk},
+        )
         result_df = post_calc_fn(pred_df, raw_df, sdk)
         if not isinstance(result_df, pl.DataFrame):
             raise TypeError(

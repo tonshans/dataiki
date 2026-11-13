@@ -9,7 +9,6 @@ Handles:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -17,7 +16,7 @@ import polars as pl
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, status
 
 from backend.config import CACHE_DIR
-from backend.database import get_db
+from backend.database import get_db, unpack_row_json
 from backend.engine.ml_jobs import (
     create_job,
     fail_job,
@@ -201,24 +200,18 @@ def list_ml_sessions(project_key: str) -> List[Dict[str, Any]]:
             (project_key,),
         ).fetchall()
 
-    results: List[Dict[str, Any]] = []
-    for r in rows:
-        d = dict(r)
-        try:
-            d["feature_columns"] = json.loads(d.get("feature_columns_json") or "[]")
-        except Exception:
-            d["feature_columns"] = []
-        try:
-            d["preprocessing"] = json.loads(d.get("preprocessing_json") or "{}")
-        except Exception:
-            d["preprocessing"] = {}
-        try:
-            d["leaderboard"] = json.loads(d.get("leaderboard_json") or "[]")
-        except Exception:
-            d["leaderboard"] = []
-        results.append(d)
-
-    return results
+    return [
+        unpack_row_json(
+            r,
+            {
+                "feature_columns_json": ("feature_columns", []),
+                "preprocessing_json": ("preprocessing", {}),
+                "leaderboard_json": ("leaderboard", []),
+            },
+            pop_source=False,
+        )
+        for r in rows
+    ]
 
 
 @router.delete("/sessions/{session_id}")

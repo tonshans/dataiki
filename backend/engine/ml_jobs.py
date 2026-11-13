@@ -10,7 +10,7 @@ import json
 import uuid
 from typing import Any, Dict, List, Optional
 
-from backend.database import get_db
+from backend.database import get_db, parse_json_safe, unpack_row_json
 
 
 def create_job(
@@ -58,18 +58,14 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     if not row:
         return None
 
-    data = dict(row)
-    try:
-        data["pause_context"] = json.loads(data.get("pause_context_json") or "{}")
-    except Exception:
-        data["pause_context"] = {}
-
-    try:
-        data["result"] = json.loads(data.get("result_json") or "{}")
-    except Exception:
-        data["result"] = {}
-
-    return data
+    return unpack_row_json(
+        row,
+        {
+            "pause_context_json": ("pause_context", {}),
+            "result_json": ("result", {}),
+        },
+        pop_source=False,
+    )
 
 
 def update_progress(
@@ -89,7 +85,7 @@ def update_progress(
     with get_db() as conn:
         if message:
             row = conn.execute("SELECT pause_context_json FROM ml_jobs WHERE job_id = ?", (job_id,)).fetchone()
-            ctx = json.loads(row["pause_context_json"]) if row and row["pause_context_json"] else {}
+            ctx = parse_json_safe(row["pause_context_json"] if row else None, {})
             ctx["current_step"] = message
             conn.execute(
                 """
@@ -149,7 +145,7 @@ def resume_job(job_id: str, action: str) -> None:
     """
     with get_db() as conn:
         row = conn.execute("SELECT pause_context_json FROM ml_jobs WHERE job_id = ?", (job_id,)).fetchone()
-        ctx = json.loads(row["pause_context_json"]) if row and row["pause_context_json"] else {}
+        ctx = parse_json_safe(row["pause_context_json"] if row else None, {})
         ctx["resumed_action"] = action
         conn.execute(
             """
@@ -209,18 +205,15 @@ def list_jobs(project_key: Optional[str] = None) -> List[Dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(query, tuple(params)).fetchall()
 
-    results: List[Dict[str, Any]] = []
-    for r in rows:
-        d = dict(r)
-        try:
-            d["pause_context"] = json.loads(d.get("pause_context_json") or "{}")
-        except Exception:
-            d["pause_context"] = {}
-        try:
-            d["result"] = json.loads(d.get("result_json") or "{}")
-        except Exception:
-            d["result"] = {}
-        results.append(d)
-
-    return results
+    return [
+        unpack_row_json(
+            r,
+            {
+                "pause_context_json": ("pause_context", {}),
+                "result_json": ("result", {}),
+            },
+            pop_source=False,
+        )
+        for r in rows
+    ]
 

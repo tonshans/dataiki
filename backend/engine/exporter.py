@@ -26,7 +26,7 @@ import joblib
 import polars as pl
 
 from backend.config import BASE_DIR, CACHE_DIR, EXPORTS_DIR
-from backend.database import get_db
+from backend.database import get_db, parse_json_safe
 
 TEMPLATES_DIR = BASE_DIR / "backend" / "templates"
 
@@ -89,17 +89,8 @@ def _get_pinned_dependencies() -> Dict[str, str]:
     return pinned
 
 
-def _parse_json_safe(raw: Any, default: Any) -> Any:
-    """Safely parse a JSON string or pass through already-decoded values."""
-    if raw is None or raw == "":
-        return default
-    if isinstance(raw, (dict, list)):
-        return raw
-    try:
-        parsed = json.loads(raw)
-        return parsed if parsed is not None else default
-    except Exception:
-        return default
+# Alias to centralized database deserialization helper
+_parse_json_safe = parse_json_safe
 
 
 def _normalize_op_type(step: Dict[str, Any]) -> str:

@@ -11,20 +11,16 @@ Executes Bayesian Optimization (Optuna) for hyperparameter tuning with:
 from __future__ import annotations
 
 import json
-import math
-import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
 import joblib
 import numpy as np
 import optuna
 import polars as pl
-from sklearn.compose import ColumnTransformer
-from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
-from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import KFold, StratifiedKFold
 
 # Candidate Model Imports
 from sklearn.ensemble import (
@@ -52,7 +48,12 @@ import xgboost as xgb
 
 from backend.config import ARTIFACTS_DIR, CACHE_DIR
 from backend.database import get_db
-from backend.engine.dag_runner import execute_dag, trace_node_lineage
+from backend.engine.dag_runner import execute_dag
+from backend.engine.ml_common import (
+    HIGHER_IS_BETTER_METRICS,
+    evaluate_model_predictions,
+    prepare_ml_dataset,
+)
 from backend.engine.ml_jobs import (
     complete_job,
     create_job,
@@ -60,13 +61,7 @@ from backend.engine.ml_jobs import (
     get_job,
     update_progress,
 )
-from backend.engine.ml_screening import (
-    _evaluate_classification_metrics,
-    _evaluate_regression_metrics,
-    build_column_transformer,
-)
-from backend.engine.recipe_engine import apply_recipe_steps
-from backend.schemas import PreprocessingConfig, RecipeStep, TuningRequest
+from backend.schemas import PreprocessingConfig, TuningRequest
 
 # Suppress Optuna verbose logs
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -266,112 +261,46 @@ def run_optuna_tuning(
             raise FileNotFoundError(f"Input Parquet not found: {parquet_file}")
 
         df = pl.read_parquet(parquet_file)
-        if req.target_column not in df.columns:
-            raise KeyError(f"Target column '{req.target_column}' missing in dataset.")
 
-        feature_cols = [c for c in req.feature_columns if c in df.columns and c != req.target_column]
-        if not feature_cols:
-            raise ValueError("No valid feature columns provided for tuning.")
+        update_progress(job_id, progress=10, message="Preparing dataset split and preprocessing")
 
-        # Sampling
-        is_cls = req.task_type in ("classification", "multiclass")
-        sample_df = df
-        if req.sample_limit > 0 and df.height > req.sample_limit:
-            sample_df = df.sample(n=req.sample_limit, seed=42)
-
-        # Train/Test Split (Holdout Test)
-        sub_df = sample_df.select([req.target_column] + feature_cols)
-        sub_df = sub_df.filter(pl.col(req.target_column).is_not_null())
-
-        stratify_target = sub_df[req.target_column].to_list() if is_cls else None
-        train_indices, test_indices = train_test_split(
-            np.arange(sub_df.height),
+        prepared = prepare_ml_dataset(
+            df=df,
+            target_column=req.target_column,
+            feature_columns=req.feature_columns,
+            task_type=req.task_type,
+            preprocessing=req.preprocessing,
+            sample_limit=req.sample_limit,
             test_size=req.test_size,
-            random_state=42,
-            stratify=stratify_target,
+            project_key=req.project_key,
+            input_node_id=req.input_node_id,
         )
-
-        train_df = sub_df[train_indices]
-        test_df = sub_df[test_indices]
-
-        # Apply Train-Only recipe steps (SMOTE / Jitter) strictly on train_df
-        lineage = trace_node_lineage(req.project_key, req.input_node_id)
-        train_only_steps_raw = [
-            s for s in lineage.get("recipe_steps", []) if s.get("is_train_only") is True
-        ]
-        if train_only_steps_raw:
-            train_only_steps = [RecipeStep.model_validate(s) for s in train_only_steps_raw]
-            train_df, _ = apply_recipe_steps(
-                train_df,
-                train_only_steps,
-                include_train_only=True,
-                fail_fast_mode=False,
-            )
 
         update_progress(job_id, progress=15, message="Fitting ColumnTransformer preprocessing")
 
-        # Feature preprocessing via ColumnTransformer
-        num_indices = [i for i, c in enumerate(feature_cols) if train_df[c].dtype.is_numeric()]
-        cat_indices = [i for i, c in enumerate(feature_cols) if i not in num_indices]
-
-        transformer = build_column_transformer(num_indices, cat_indices, req.preprocessing)
-
-        X_train_raw = train_df.select(feature_cols).to_numpy()
-        X_test_raw = test_df.select(feature_cols).to_numpy()
-
-        y_train_raw = train_df[req.target_column].to_numpy()
-        y_test_raw = test_df[req.target_column].to_numpy()
-
-        le: Optional[LabelEncoder] = None
-        is_multiclass = False
-        if is_cls:
-            le = LabelEncoder()
-            y_train = le.fit_transform(y_train_raw)
-            y_test = le.transform(y_test_raw)
-            is_multiclass = len(le.classes_) > 2
-        else:
-            y_train = y_train_raw.astype(np.float64)
-            y_test = y_test_raw.astype(np.float64)
-
-        if req.preprocessing.categorical_encoder == "target" and cat_indices:
-            X_train_trans = transformer.fit_transform(X_train_raw, y_train)
-        else:
-            X_train_trans = transformer.fit_transform(X_train_raw)
-        X_test_trans = transformer.transform(X_test_raw)
+        feature_cols = prepared.feature_cols
+        lineage = prepared.lineage
+        transformer = prepared.transformer
+        le = prepared.label_encoder
+        is_cls = prepared.is_classification
+        is_multiclass = prepared.is_multiclass
+        X_train_trans = prepared.X_train
+        X_test_trans = prepared.X_test
+        y_train = prepared.y_train
+        y_test = prepared.y_test
 
         update_progress(job_id, progress=20, message="Evaluating Baseline model on Holdout")
 
         # 1. Baseline Evaluation (Default Hyperparameters)
         base_model = _instantiate_model(req.algorithm, req.task_type, {}, use_gpu=req.use_gpu)
         base_model.fit(X_train_trans, y_train)
-        y_base_pred = base_model.predict(X_test_trans)
-
-        y_base_proba = None
-        if is_cls and hasattr(base_model, "predict_proba"):
-            try:
-                y_base_proba = base_model.predict_proba(X_test_trans)
-            except Exception:
-                pass
-
-        if is_cls:
-            base_metrics, base_cm = _evaluate_classification_metrics(
-                y_true=y_test,
-                y_pred=y_base_pred,
-                y_proba=y_base_proba,
-                is_multiclass=is_multiclass,
-            )
-        else:
-            base_metrics = _evaluate_regression_metrics(y_true=y_test, y_pred=y_base_pred)
-            base_cm = None
+        base_metrics, base_cm = evaluate_model_predictions(
+            base_model, X_test_trans, y_test, is_cls, is_multiclass
+        )
 
         # 2. Setup Optuna Optimization Direction
-        higher_is_better = {
-            "accuracy", "f1", "precision", "recall", "roc_auc",
-            "average_precision", "mcc", "explained_variance", "r2",
-            "pearson_r", "cost_matrix_gain",
-        }
         pm = req.primary_metric.lower().strip()
-        direction = "maximize" if pm in higher_is_better else "minimize"
+        direction = "maximize" if pm in HIGHER_IS_BETTER_METRICS else "minimize"
 
         # K-Fold Cross Validation Setup
         n_samples = len(y_train)
@@ -397,13 +326,7 @@ def run_optuna_tuning(
 
                 m = _instantiate_model(req.algorithm, req.task_type, params, use_gpu=req.use_gpu)
                 m.fit(X_tr, y_tr)
-                y_val_pred = m.predict(X_val)
-
-                if is_cls:
-                    y_val_proba = m.predict_proba(X_val) if hasattr(m, "predict_proba") else None
-                    m_dict, _ = _evaluate_classification_metrics(y_val, y_val_pred, y_val_proba, is_multiclass)
-                else:
-                    m_dict = _evaluate_regression_metrics(y_val, y_val_pred)
+                m_dict, _ = evaluate_model_predictions(m, X_val, y_val, is_cls, is_multiclass)
 
                 score = m_dict.get(pm, 0.0)
                 fold_scores.append(score)
@@ -437,24 +360,9 @@ def run_optuna_tuning(
         best_model = _instantiate_model(req.algorithm, req.task_type, best_params, use_gpu=req.use_gpu)
         best_model.fit(X_train_trans, y_train)
 
-        y_tuned_pred = best_model.predict(X_test_trans)
-        y_tuned_proba = None
-        if is_cls and hasattr(best_model, "predict_proba"):
-            try:
-                y_tuned_proba = best_model.predict_proba(X_test_trans)
-            except Exception:
-                pass
-
-        if is_cls:
-            tuned_metrics, tuned_cm = _evaluate_classification_metrics(
-                y_true=y_test,
-                y_pred=y_tuned_pred,
-                y_proba=y_tuned_proba,
-                is_multiclass=is_multiclass,
-            )
-        else:
-            tuned_metrics = _evaluate_regression_metrics(y_true=y_test, y_pred=y_tuned_pred)
-            tuned_cm = None
+        tuned_metrics, tuned_cm = evaluate_model_predictions(
+            best_model, X_test_trans, y_test, is_cls, is_multiclass
+        )
 
         # 5. Compute 3 Visual Insights
         # a) Hyperparameter Importance
@@ -747,77 +655,33 @@ def retrain_published_model(
         raise FileNotFoundError(f"Fresh data Parquet not found: {fresh_parquet}")
 
     df = pl.read_parquet(fresh_parquet)
-    is_cls = task_type in ("classification", "multiclass")
 
-    # Train / Test split on fresh data (80 / 20)
-    sub_df = df.select([target_column] + feature_cols).filter(pl.col(target_column).is_not_null())
-    stratify = sub_df[target_column].to_list() if is_cls else None
-    tr_idx, te_idx = train_test_split(
-        np.arange(sub_df.height),
+    # Re-fit preprocessing on fresh data (frozen lineage, no re-trace)
+    prep_cfg = PreprocessingConfig.model_validate(frozen_lineage.get("preprocessing", {}))
+    prepared = prepare_ml_dataset(
+        df=df,
+        target_column=target_column,
+        feature_columns=feature_cols,
+        task_type=task_type,
+        preprocessing=prep_cfg,
         test_size=0.20,
-        random_state=42,
-        stratify=stratify,
+        frozen_lineage=frozen_lineage,
     )
 
-    train_df = sub_df[tr_idx]
-    test_df = sub_df[te_idx]
-
-    # Apply train-only augmentation cards if any
-    train_only_steps_raw = [
-        s for s in frozen_lineage.get("recipe_steps", []) if s.get("is_train_only") is True
-    ]
-    if train_only_steps_raw:
-        train_only_steps = [RecipeStep.model_validate(s) for s in train_only_steps_raw]
-        train_df, _ = apply_recipe_steps(
-            train_df, train_only_steps, include_train_only=True, fail_fast_mode=False
-        )
-
-    # Re-fit preprocessing
-    prep_cfg = PreprocessingConfig.model_validate(frozen_lineage.get("preprocessing", {}))
-    num_idx = [i for i, c in enumerate(feature_cols) if train_df[c].dtype.is_numeric()]
-    cat_idx = [i for i, c in enumerate(feature_cols) if i not in num_idx]
-
-    transformer = build_column_transformer(num_idx, cat_idx, prep_cfg)
-    X_tr_raw = train_df.select(feature_cols).to_numpy()
-    X_te_raw = test_df.select(feature_cols).to_numpy()
-
-    y_tr_raw = train_df[target_column].to_numpy()
-    y_te_raw = test_df[target_column].to_numpy()
-
-    le: Optional[LabelEncoder] = None
-    is_multiclass = False
-    if is_cls:
-        le = LabelEncoder()
-        y_tr = le.fit_transform(y_tr_raw)
-        y_te = le.transform(y_te_raw)
-        is_multiclass = len(le.classes_) > 2
-    else:
-        y_tr = y_tr_raw.astype(np.float64)
-        y_te = y_te_raw.astype(np.float64)
-
-    if prep_cfg.categorical_encoder == "target" and cat_idx:
-        X_tr_trans = transformer.fit_transform(X_tr_raw, y_tr)
-    else:
-        X_tr_trans = transformer.fit_transform(X_tr_raw)
-    X_te_trans = transformer.transform(X_te_raw)
+    feature_cols = prepared.feature_cols
+    transformer = prepared.transformer
+    le = prepared.label_encoder
+    is_cls = prepared.is_classification
+    is_multiclass = prepared.is_multiclass
 
     # Train model with locked hyperparameters
     model = _instantiate_model(algorithm, task_type, locked_params)
-    model.fit(X_tr_trans, y_tr)
+    model.fit(prepared.X_train, prepared.y_train)
 
     # Evaluate new metrics on fresh holdout
-    y_pred = model.predict(X_te_trans)
-    y_proba = None
-    if is_cls and hasattr(model, "predict_proba"):
-        try:
-            y_proba = model.predict_proba(X_te_trans)
-        except Exception:
-            pass
-
-    if is_cls:
-        new_metrics, _ = _evaluate_classification_metrics(y_te, y_pred, y_proba, is_multiclass)
-    else:
-        new_metrics = _evaluate_regression_metrics(y_te, y_pred)
+    new_metrics, _ = evaluate_model_predictions(
+        model, prepared.X_test, prepared.y_test, is_cls, is_multiclass
+    )
 
     # Determine next version number
     with get_db() as conn:
